@@ -1,0 +1,327 @@
+import React, { useEffect, useMemo, useState } from 'react'
+import { isSupabaseConfigured, supabase } from './supabase'
+
+const CATEGORIAS = ['Salário', 'Renda extra', 'Moradia', 'Alimentação', 'Transporte', 'Saúde', 'Educação', 'Lazer', 'Vestuário', 'Dívidas', 'Imposto', 'Investimentos', 'Outros']
+const MAX_VALUE = 9_999_999_999.99
+const brl = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' })
+const eur = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'EUR' })
+const monthFormatter = new Intl.DateTimeFormat('pt-BR', { month: 'long', year: 'numeric' })
+const shortMonthFormatter = new Intl.DateTimeFormat('pt-BR', { month: 'short' })
+const dateFormatter = new Intl.DateTimeFormat('pt-BR')
+
+function getInitialForm() {
+  return { data: new Date().toISOString().slice(0, 10), tipo: 'Gasto', moeda: 'BRL', categoria: 'Alimentação', categoriaOutro: '', descricao: '', valor: '' }
+}
+
+function formatMoney(value, currency = 'BRL') {
+  return (currency === 'EUR' ? eur : brl).format(Number(value) || 0)
+}
+
+function toBrl(item, eurToBrl) {
+  const amount = Number(item.valor)
+  if (item.moeda === 'EUR') return eurToBrl ? amount * eurToBrl : null
+  return amount
+}
+
+function convertFromBrl(value, currency, eurToBrl) {
+  if (currency === 'EUR') return eurToBrl ? value / eurToBrl : null
+  return value
+}
+
+function AuthScreen({ onSession }) {
+  const [mode, setMode] = useState('login')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [name, setName] = useState('')
+  const [message, setMessage] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  async function submit(event) {
+    event.preventDefault()
+    setMessage('')
+    setBusy(true)
+    const credentials = { email: email.trim(), password }
+    const { data, error } = mode === 'login'
+      ? await supabase.auth.signInWithPassword(credentials)
+      : await supabase.auth.signUp({ ...credentials, options: { data: { nome: name.trim() } } })
+    setBusy(false)
+    if (error) return setMessage(error.message)
+    if (mode === 'signup' && !data.session) return setMessage('Conta criada. Confirme o e-mail para entrar.')
+    onSession(data.session)
+  }
+
+  return <main className="auth-layout">
+    <section className="auth-card">
+      <div className="brand-mark">MF</div>
+      <p className="eyebrow">FINANÇAS EM FAMÍLIA</p>
+      <h1>O seu dinheiro, claro e organizado.</h1>
+      <p className="muted">Registre entradas e despesas. Os seus dados são privados e sincronizados em todos os dispositivos.</p>
+      <div className="tab-list" role="tablist">
+        <button type="button" className={mode === 'login' ? 'active' : ''} onClick={() => setMode('login')}>Entrar</button>
+        <button type="button" className={mode === 'signup' ? 'active' : ''} onClick={() => setMode('signup')}>Criar conta</button>
+      </div>
+      <form onSubmit={submit} className="form-stack">
+        {mode === 'signup' && <label>Nome
+          <input required value={name} onChange={event => setName(event.target.value)} placeholder="Como quer ser chamado?" />
+        </label>}
+        <label>E-mail
+          <input required type="email" value={email} onChange={event => setEmail(event.target.value)} placeholder="nome@email.com" autoComplete="email" />
+        </label>
+        <label>Senha
+          <input required type="password" minLength="6" value={password} onChange={event => setPassword(event.target.value)} placeholder="Pelo menos 6 caracteres" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} />
+        </label>
+        {message && <p className="form-message">{message}</p>}
+        <button className="button primary" disabled={busy}>{busy ? 'Aguarde…' : mode === 'login' ? 'Entrar na conta' : 'Criar conta'}</button>
+      </form>
+    </section>
+  </main>
+}
+
+function SetupScreen() {
+  return <main className="auth-layout"><section className="auth-card setup-card">
+    <div className="brand-mark">MF</div><p className="eyebrow">CONFIGURAÇÃO NECESSÁRIA</p>
+    <h1>Ligue o seu Supabase</h1>
+    <p className="muted">Copie <code>.env.example</code> para <code>.env</code> e preencha a URL e a chave anon do seu projeto. Depois execute o SQL em <code>supabase/schema.sql</code>.</p>
+  </section></main>
+}
+
+function App() {
+  const [session, setSession] = useState(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    if (!supabase) return setLoading(false)
+    supabase.auth.getSession().then(({ data }) => { setSession(data.session); setLoading(false) })
+    const { data: subscription } = supabase.auth.onAuthStateChange((_event, nextSession) => setSession(nextSession))
+    return () => subscription.subscription.unsubscribe()
+  }, [])
+
+  if (!isSupabaseConfigured) return <SetupScreen />
+  if (loading) return <main className="loading">A preparar a sua área…</main>
+  return session ? <Dashboard session={session} /> : <AuthScreen onSession={setSession} />
+}
+
+function Dashboard({ session }) {
+  const today = new Date()
+  const [month, setMonth] = useState(today.getMonth())
+  const [year, setYear] = useState(today.getFullYear())
+  const [items, setItems] = useState([])
+  const [annualItems, setAnnualItems] = useState([])
+  const [profile, setProfile] = useState('')
+  const [form, setForm] = useState(getInitialForm)
+  const [editing, setEditing] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [notice, setNotice] = useState('')
+  const [noticeKind, setNoticeKind] = useState('error')
+  const [exchange, setExchange] = useState({ rate: null, date: '', loading: true, error: '' })
+  const [displayCurrency, setDisplayCurrency] = useState('EUR')
+
+  const periodStart = `${year}-${String(month + 1).padStart(2, '0')}-01`
+  const periodEnd = new Date(year, month + 1, 1).toISOString().slice(0, 10)
+  const yearStart = `${year}-01-01`
+  const yearEnd = `${year + 1}-01-01`
+
+  useEffect(() => { loadProfile() }, [])
+  useEffect(() => { loadItems() }, [periodStart, periodEnd])
+  useEffect(() => { loadAnnualItems() }, [yearStart, yearEnd])
+  useEffect(() => {
+    loadExchangeRate()
+    const refreshId = window.setInterval(loadExchangeRate, 60 * 60 * 1000)
+    return () => window.clearInterval(refreshId)
+  }, [])
+
+  async function loadProfile() {
+    const { data } = await supabase.from('profiles').select('nome').eq('id', session.user.id).maybeSingle()
+    if (data?.nome) return setProfile(data.nome)
+    const name = session.user.user_metadata?.nome || session.user.email?.split('@')[0] || 'Usuário'
+    const { error } = await supabase.from('profiles').upsert({ id: session.user.id, nome: name })
+    if (!error) setProfile(name)
+  }
+
+  async function loadItems() {
+    const { data, error } = await supabase.from('lancamentos').select('*').gte('data', periodStart).lt('data', periodEnd).order('data', { ascending: false }).order('created_at', { ascending: false })
+    if (error) {
+      setNoticeKind('error')
+      setNotice('Não foi possível carregar os lançamentos: ' + error.message)
+      return false
+    }
+    setItems(data || [])
+    return true
+  }
+
+  async function loadAnnualItems() {
+    const { data, error } = await supabase.from('lancamentos').select('*').gte('data', yearStart).lt('data', yearEnd)
+    if (error) {
+      setNoticeKind('error')
+      setNotice('Não foi possível carregar o resumo anual: ' + error.message)
+      return false
+    }
+    setAnnualItems(data || [])
+    return true
+  }
+
+  async function loadExchangeRate() {
+    setExchange(current => ({ ...current, loading: true, error: '' }))
+    try {
+      const response = await fetch('https://api.frankfurter.dev/v2/rate/EUR/BRL')
+      if (!response.ok) throw new Error('A cotação não respondeu agora.')
+      const data = await response.json()
+      if (!Number(data.rate)) throw new Error('Cotação indisponível.')
+      setExchange({ rate: Number(data.rate), date: data.date, loading: false, error: '' })
+    } catch (error) {
+      setExchange({ rate: null, date: '', loading: false, error: error.message || 'Cotação indisponível.' })
+    }
+  }
+
+  const totals = useMemo(() => items.reduce((accumulator, item) => {
+    const valueInBrl = toBrl(item, exchange.rate)
+    if (valueInBrl === null) {
+      accumulator.hasUnconvertedEuro = true
+      return accumulator
+    }
+    accumulator[item.tipo === 'Recebimento' ? 'income' : 'expenses'] += valueInBrl
+    accumulator.byCategory[item.categoria] = (accumulator.byCategory[item.categoria] || 0) + (item.tipo === 'Recebimento' ? valueInBrl : -valueInBrl)
+    return accumulator
+  }, { income: 0, expenses: 0, byCategory: {}, hasUnconvertedEuro: false }), [items, exchange.rate])
+  const balance = totals.income - totals.expenses
+
+  const annual = useMemo(() => {
+    const byMonth = Array.from({ length: 12 }, (_, index) => ({ month: index, total: 0 }))
+    let total = 0
+    let hasUnconvertedEuro = false
+    annualItems.filter(item => item.tipo === 'Gasto').forEach(item => {
+      const valueInBrl = toBrl(item, exchange.rate)
+      if (valueInBrl === null) { hasUnconvertedEuro = true; return }
+      total += valueInBrl
+      byMonth[new Date(`${item.data}T12:00:00`).getMonth()].total += valueInBrl
+    })
+    return { total, byMonth, hasUnconvertedEuro }
+  }, [annualItems, exchange.rate])
+  const annualMax = Math.max(...annual.byMonth.map(item => item.total), 1)
+  const currencyName = displayCurrency === 'EUR' ? 'euro' : 'real'
+  const displayValue = value => convertFromBrl(value, displayCurrency, exchange.rate)
+
+  function changeForm(field, value) { setForm(current => ({ ...current, [field]: value })) }
+  function clearForm() { setForm(getInitialForm()); setEditing(null) }
+
+  async function saveItem(event) {
+    event.preventDefault()
+    const value = Number(String(form.valor).replace(',', '.'))
+    const category = form.categoria === 'Outros' ? form.categoriaOutro.trim() : form.categoria
+    if (!form.data || !form.descricao.trim() || !(value > 0)) {
+      setNoticeKind('error')
+      return setNotice('Preencha data, descrição e um valor superior a zero.')
+    }
+    if (!category) {
+      setNoticeKind('error')
+      return setNotice('Informe qual é a categoria em “Outros”.')
+    }
+    if (value > MAX_VALUE) {
+      setNoticeKind('error')
+      return setNotice(`O valor máximo permitido é ${formatMoney(MAX_VALUE, form.moeda)}.`)
+    }
+    const wasEditing = Boolean(editing)
+    setBusy(true)
+    setNotice('')
+    const payload = { user_id: session.user.id, data: form.data, tipo: form.tipo, moeda: form.moeda, categoria: category, descricao: form.descricao.trim(), valor: value }
+    const request = wasEditing ? supabase.from('lancamentos').update(payload).eq('id', editing) : supabase.from('lancamentos').insert(payload)
+    const { error } = await request
+    setBusy(false)
+    if (error) {
+      setNoticeKind('error')
+      return setNotice('Não foi possível guardar: ' + error.message)
+    }
+    clearForm()
+    await Promise.all([loadItems(), loadAnnualItems()])
+    setNoticeKind('success')
+    setNotice(wasEditing ? 'Alterações salvas com sucesso.' : 'Lançamento adicionado com sucesso.')
+    document.getElementById('historico')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
+  async function removeItem(id) {
+    if (!window.confirm('Excluir este lançamento?')) return
+    const { error } = await supabase.from('lancamentos').delete().eq('id', id)
+    if (error) {
+      setNoticeKind('error')
+      return setNotice('Não foi possível excluir: ' + error.message)
+    }
+    await Promise.all([loadItems(), loadAnnualItems()])
+  }
+
+  function editItem(item) {
+    setEditing(item.id)
+    const hasKnownCategory = CATEGORIAS.includes(item.categoria)
+    setForm({ data: item.data, tipo: item.tipo, moeda: item.moeda || 'BRL', categoria: hasKnownCategory ? item.categoria : 'Outros', categoriaOutro: hasKnownCategory ? '' : item.categoria, descricao: item.descricao, valor: String(item.valor) })
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  async function logout() { await supabase.auth.signOut() }
+  const periodLabel = monthFormatter.format(new Date(year, month, 1))
+  const hasExchangeWarning = exchange.error || totals.hasUnconvertedEuro || annual.hasUnconvertedEuro
+
+  return <main className="app-shell">
+    <header className="topbar"><div className="brand"><div className="brand-mark small">MF</div><span>Meu Fluxo</span></div>
+      <div className="user-actions"><span>Olá, {profile || '…'}</span><button className="text-button" onClick={logout}>Sair</button></div>
+    </header>
+
+    <section className="hero"><div><p className="eyebrow">VISÃO GERAL</p><h1>Como está o seu mês?</h1><p>{periodLabel}</p></div>
+      <div className="hero-side"><div className="period-picker"><button aria-label="Mês anterior" onClick={() => month === 0 ? (setMonth(11), setYear(year - 1)) : setMonth(month - 1)}>‹</button><strong>{periodLabel}</strong><button aria-label="Próximo mês" onClick={() => month === 11 ? (setMonth(0), setYear(year + 1)) : setMonth(month + 1)}>›</button></div>
+        <div className="currency-switch" aria-label="Moeda dos totais"><span>Ver totais em</span><button type="button" className={displayCurrency === 'EUR' ? 'active' : ''} onClick={() => setDisplayCurrency('EUR')}>€ Euro</button><button type="button" className={displayCurrency === 'BRL' ? 'active' : ''} onClick={() => setDisplayCurrency('BRL')}>R$ Real</button></div>
+        <ExchangeRate exchange={exchange} onRefresh={loadExchangeRate} />
+      </div>
+    </section>
+
+    {hasExchangeWarning && <p className="exchange-warning">A cotação em euro está indisponível no momento. Valores em euro não entram nos totais até a atualização ser concluída.</p>}
+
+    <section className="summary-grid summary-grid-four">
+      <SummaryCard title="Entradas" value={displayValue(totals.income)} currency={displayCurrency} icon="↗" tone="income" caption={`Convertido para ${currencyName}`} />
+      <SummaryCard title="Despesas" value={displayValue(totals.expenses)} currency={displayCurrency} icon="↘" tone="expense" caption={`Convertido para ${currencyName}`} />
+      <SummaryCard title="Saldo do mês" value={displayValue(balance)} currency={displayCurrency} icon="◎" tone={balance >= 0 ? 'balance' : 'expense'} caption={`Convertido para ${currencyName}`} />
+      <SummaryCard title={`Gastos em ${year}`} value={displayValue(annual.total)} currency={displayCurrency} icon="◷" tone="annual" caption={`Ano completo em ${currencyName}`} />
+    </section>
+
+    <section className="content-grid">
+      <form className="entry-card" onSubmit={saveItem}><div className="section-heading"><div><p className="eyebrow">{editing ? 'A EDITAR' : 'NOVO LANÇAMENTO'}</p><h2>{editing ? 'Atualize o lançamento' : 'Registre um movimento'}</h2></div>{editing && <button type="button" className="text-button" onClick={clearForm}>Cancelar</button>}</div>
+        <div className="entry-grid"><label>Data<input type="date" value={form.data} onChange={event => changeForm('data', event.target.value)} required /></label>
+          <label>Tipo<select value={form.tipo} onChange={event => changeForm('tipo', event.target.value)}><option>Gasto</option><option>Recebimento</option></select></label>
+          <label>Moeda<select value={form.moeda} onChange={event => changeForm('moeda', event.target.value)}><option value="BRL">Real brasileiro (R$)</option><option value="EUR">Euro (€)</option></select></label>
+          <label>Categoria<select value={form.categoria} onChange={event => changeForm('categoria', event.target.value)}>{CATEGORIAS.map(category => <option key={category}>{category}</option>)}</select></label>
+          {form.categoria === 'Outros' && <label className="span-all">Qual categoria?<input value={form.categoriaOutro} onChange={event => changeForm('categoriaOutro', event.target.value)} placeholder="Ex.: Animais, presente, manutenção…" required /></label>}
+          <label>Valor ({form.moeda === 'EUR' ? '€' : 'R$'})<input inputMode="decimal" value={form.valor} onChange={event => changeForm('valor', event.target.value)} placeholder="0,00" required /></label>
+          <label className="span-all">Descrição<input value={form.descricao} onChange={event => changeForm('descricao', event.target.value)} placeholder="Ex.: Compras do supermercado" required /></label>
+        </div>
+        {form.moeda === 'EUR' && <p className="conversion-preview">{exchange.rate ? `Cotação de hoje: € 1 = ${formatMoney(exchange.rate)}. Este lançamento será exibido em real com a taxa atual.` : 'Buscando a cotação atual do euro…'}</p>}
+        {notice && <p className={'form-message ' + noticeKind}>{notice}</p>}<button className="button primary" disabled={busy}>{busy ? 'A guardar…' : editing ? 'Guardar alterações' : 'Adicionar lançamento'}</button>
+      </form>
+
+      <section className="category-card"><div className="section-heading"><div><p className="eyebrow">ANÁLISE DO MÊS</p><h2>Por categoria</h2></div></div>
+        {Object.keys(totals.byCategory).length ? <div className="category-list">{Object.entries(totals.byCategory).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).map(([category, value]) => <div className="category-row" key={category}><span>{category}</span><strong className={value >= 0 ? 'positive' : 'negative'}>{value >= 0 ? '+' : '−'} {displayValue(Math.abs(value)) === null ? '—' : formatMoney(displayValue(Math.abs(value)), displayCurrency)}</strong></div>)}</div> : <Empty text="Ainda não existem movimentos neste mês." />}
+      </section>
+    </section>
+
+    <section className="annual-card"><div className="section-heading"><div><p className="eyebrow">VISÃO ANUAL</p><h2>Gastos de {year}</h2><p className="section-subtitle">Todos os gastos, agrupados por mês e convertidos para {currencyName} na cotação atual.</p></div><strong className="annual-total">{displayValue(annual.total) === null ? '—' : formatMoney(displayValue(annual.total), displayCurrency)}</strong></div>
+      <div className="annual-chart">{annual.byMonth.map(item => <div className="month-column" key={item.month}><span className="bar-value">{item.total ? (displayValue(item.total) === null ? '—' : formatMoney(displayValue(item.total), displayCurrency)) : ''}</span><div className="bar-track"><div className="bar-fill" style={{ height: `${(item.total / annualMax) * 100}%` }} /></div><span>{shortMonthFormatter.format(new Date(year, item.month, 1)).replace('.', '')}</span></div>)}</div>
+    </section>
+
+    <section className="transactions-card" id="historico"><div className="section-heading"><div><p className="eyebrow">HISTÓRICO</p><h2>Lançamentos de {periodLabel}</h2></div><span className="count">{items.length} {items.length === 1 ? 'movimento' : 'movimentos'}</span></div>
+      {items.length ? <div className="table-wrap"><table><thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Tipo</th><th>Valor informado</th><th>Em real hoje</th><th><span className="sr-only">Ações</span></th></tr></thead><tbody>{items.map(item => {
+        const converted = toBrl(item, exchange.rate)
+        return <tr key={item.id}><td>{dateFormatter.format(new Date(`${item.data}T12:00:00`))}</td><td><strong>{item.descricao}</strong></td><td>{item.categoria}</td><td><span className={'pill ' + (item.tipo === 'Recebimento' ? 'income' : 'expense')}>{item.tipo}</span></td><td className={item.tipo === 'Recebimento' ? 'positive' : 'negative'}>{item.tipo === 'Recebimento' ? '+' : '−'} {formatMoney(item.valor, item.moeda || 'BRL')}</td><td>{item.moeda === 'EUR' ? (converted === null ? 'Cotação indisponível' : formatMoney(converted)) : '—'}</td><td className="row-actions"><button onClick={() => editItem(item)}>Editar</button><button onClick={() => removeItem(item.id)} className="delete">Excluir</button></td></tr>
+      })}</tbody></table></div> : <Empty text="Sem lançamentos para este mês. Use o formulário acima para adicionar o primeiro." />}
+    </section>
+  </main>
+}
+
+function ExchangeRate({ exchange, onRefresh }) {
+  if (exchange.loading) return <div className="exchange-rate">Atualizando cotação EUR/BRL…</div>
+  if (exchange.error) return <button type="button" className="exchange-rate error" onClick={onRefresh}>Tentar atualizar cotação</button>
+  return <div className="exchange-rate"><span>€ 1 = <strong>{formatMoney(exchange.rate)}</strong></span><small>referência de {exchange.date ? dateFormatter.format(new Date(`${exchange.date}T12:00:00`)) : 'hoje'}</small><button type="button" onClick={onRefresh} aria-label="Atualizar cotação">↻</button></div>
+}
+
+function SummaryCard({ title, value, currency, icon, tone, caption }) {
+  return <article className={'summary-card ' + tone}><span className="summary-icon">{icon}</span><p>{title}</p><strong>{value === null ? '—' : formatMoney(value, currency)}</strong><small>{caption}</small></article>
+}
+
+function Empty({ text }) { return <div className="empty">{text}</div> }
+
+export default App
