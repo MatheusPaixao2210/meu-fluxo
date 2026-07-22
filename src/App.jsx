@@ -28,6 +28,14 @@ function convertFromBrl(value, currency, eurToBrl) {
   return value
 }
 
+function makeInviteCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+  const values = new Uint32Array(8)
+  crypto.getRandomValues(values)
+  const code = Array.from(values, value => chars[value % chars.length]).join('')
+  return `${code.slice(0, 4)}-${code.slice(4)}`
+}
+
 function AuthScreen({ onSession }) {
   const [mode, setMode] = useState('login')
   const [email, setEmail] = useState('')
@@ -50,39 +58,21 @@ function AuthScreen({ onSession }) {
     onSession(data.session)
   }
 
-  return <main className="auth-layout">
-    <section className="auth-card">
-      <div className="brand-mark">MF</div>
-      <p className="eyebrow">FINANÇAS EM FAMÍLIA</p>
-      <h1>O seu dinheiro, claro e organizado.</h1>
-      <p className="muted">Registre entradas e despesas. Os seus dados são privados e sincronizados em todos os dispositivos.</p>
-      <div className="tab-list" role="tablist">
-        <button type="button" className={mode === 'login' ? 'active' : ''} onClick={() => setMode('login')}>Entrar</button>
-        <button type="button" className={mode === 'signup' ? 'active' : ''} onClick={() => setMode('signup')}>Criar conta</button>
-      </div>
-      <form onSubmit={submit} className="form-stack">
-        {mode === 'signup' && <label>Nome
-          <input required value={name} onChange={event => setName(event.target.value)} placeholder="Como quer ser chamado?" />
-        </label>}
-        <label>E-mail
-          <input required type="email" value={email} onChange={event => setEmail(event.target.value)} placeholder="nome@email.com" autoComplete="email" />
-        </label>
-        <label>Senha
-          <input required type="password" minLength="6" value={password} onChange={event => setPassword(event.target.value)} placeholder="Pelo menos 6 caracteres" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} />
-        </label>
-        {message && <p className="form-message">{message}</p>}
-        <button className="button primary" disabled={busy}>{busy ? 'Aguarde…' : mode === 'login' ? 'Entrar na conta' : 'Criar conta'}</button>
-      </form>
-    </section>
-  </main>
+  return <main className="auth-layout"><section className="auth-card">
+    <div className="brand-mark">MF</div><p className="eyebrow">FINANÇAS EM FAMÍLIA</p><h1>O seu dinheiro, claro e organizado.</h1>
+    <p className="muted">Registre entradas e despesas. Os seus dados são privados e sincronizados em todos os dispositivos.</p>
+    <div className="tab-list" role="tablist"><button type="button" className={mode === 'login' ? 'active' : ''} onClick={() => setMode('login')}>Entrar</button><button type="button" className={mode === 'signup' ? 'active' : ''} onClick={() => setMode('signup')}>Criar conta</button></div>
+    <form onSubmit={submit} className="form-stack">
+      {mode === 'signup' && <label>Nome<input required value={name} onChange={event => setName(event.target.value)} placeholder="Como quer ser chamado?" /></label>}
+      <label>E-mail<input required type="email" value={email} onChange={event => setEmail(event.target.value)} placeholder="nome@email.com" autoComplete="email" /></label>
+      <label>Senha<input required type="password" minLength="6" value={password} onChange={event => setPassword(event.target.value)} placeholder="Pelo menos 6 caracteres" autoComplete={mode === 'login' ? 'current-password' : 'new-password'} /></label>
+      {message && <p className="form-message">{message}</p>}<button className="button primary" disabled={busy}>{busy ? 'Aguarde…' : mode === 'login' ? 'Entrar na conta' : 'Criar conta'}</button>
+    </form>
+  </section></main>
 }
 
 function SetupScreen() {
-  return <main className="auth-layout"><section className="auth-card setup-card">
-    <div className="brand-mark">MF</div><p className="eyebrow">CONFIGURAÇÃO NECESSÁRIA</p>
-    <h1>Ligue o seu Supabase</h1>
-    <p className="muted">Copie <code>.env.example</code> para <code>.env</code> e preencha a URL e a chave anon do seu projeto. Depois execute o SQL em <code>supabase/schema.sql</code>.</p>
-  </section></main>
+  return <main className="auth-layout"><section className="auth-card setup-card"><div className="brand-mark">MF</div><p className="eyebrow">CONFIGURAÇÃO NECESSÁRIA</p><h1>Ligue o seu Supabase</h1><p className="muted">Copie <code>.env.example</code> para <code>.env</code> e preencha a URL e a chave anon do seu projeto. Depois execute o SQL em <code>supabase/schema.sql</code>.</p></section></main>
 }
 
 function App() {
@@ -107,6 +97,15 @@ function Dashboard({ session }) {
   const [year, setYear] = useState(today.getFullYear())
   const [items, setItems] = useState([])
   const [annualItems, setAnnualItems] = useState([])
+  const [accounts, setAccounts] = useState([])
+  const [activeAccountId, setActiveAccountId] = useState('personal')
+  const [activity, setActivity] = useState([])
+  const [showAccounts, setShowAccounts] = useState(false)
+  const [newAccountName, setNewAccountName] = useState('')
+  const [joinCode, setJoinCode] = useState('')
+  const [accountMessage, setAccountMessage] = useState('')
+  const [accountMessageKind, setAccountMessageKind] = useState('error')
+  const [accountBusy, setAccountBusy] = useState(false)
   const [profile, setProfile] = useState('')
   const [form, setForm] = useState(getInitialForm)
   const [editing, setEditing] = useState(null)
@@ -120,10 +119,12 @@ function Dashboard({ session }) {
   const periodEnd = new Date(year, month + 1, 1).toISOString().slice(0, 10)
   const yearStart = `${year}-01-01`
   const yearEnd = `${year + 1}-01-01`
+  const activeAccount = accounts.find(account => account.id === activeAccountId)
 
-  useEffect(() => { loadProfile() }, [])
-  useEffect(() => { loadItems() }, [periodStart, periodEnd])
-  useEffect(() => { loadAnnualItems() }, [yearStart, yearEnd])
+  useEffect(() => { loadProfile(); loadAccounts() }, [])
+  useEffect(() => { loadItems() }, [periodStart, periodEnd, activeAccountId])
+  useEffect(() => { loadAnnualItems() }, [yearStart, yearEnd, activeAccountId])
+  useEffect(() => { if (activeAccountId === 'personal') setActivity([]); else loadActivity() }, [activeAccountId])
   useEffect(() => {
     loadExchangeRate()
     const refreshId = window.setInterval(loadExchangeRate, 60 * 60 * 1000)
@@ -138,26 +139,42 @@ function Dashboard({ session }) {
     if (!error) setProfile(name)
   }
 
-  async function loadItems() {
-    const { data, error } = await supabase.from('lancamentos').select('*').gte('data', periodStart).lt('data', periodEnd).order('data', { ascending: false }).order('created_at', { ascending: false })
+  async function loadAccounts() {
+    const { data, error } = await supabase.from('contas').select('id,nome,codigo_convite,owner_id').order('created_at')
     if (error) {
-      setNoticeKind('error')
-      setNotice('Não foi possível carregar os lançamentos: ' + error.message)
+      setAccountMessageKind('error')
+      setAccountMessage('Para usar contas conjuntas, execute a migração SQL indicada no projeto.')
       return false
     }
+    setAccounts(data || [])
+    return true
+  }
+
+  function queryForActiveAccount(query) {
+    return activeAccountId === 'personal'
+      ? query.eq('user_id', session.user.id).is('conta_id', null)
+      : query.eq('conta_id', activeAccountId)
+  }
+
+  async function loadItems() {
+    const query = queryForActiveAccount(supabase.from('lancamentos').select('*').gte('data', periodStart).lt('data', periodEnd).order('data', { ascending: false }).order('created_at', { ascending: false }))
+    const { data, error } = await query
+    if (error) { setNoticeKind('error'); setNotice('Não foi possível carregar os lançamentos: ' + error.message); return false }
     setItems(data || [])
     return true
   }
 
   async function loadAnnualItems() {
-    const { data, error } = await supabase.from('lancamentos').select('*').gte('data', yearStart).lt('data', yearEnd)
-    if (error) {
-      setNoticeKind('error')
-      setNotice('Não foi possível carregar o resumo anual: ' + error.message)
-      return false
-    }
+    const query = queryForActiveAccount(supabase.from('lancamentos').select('*').gte('data', yearStart).lt('data', yearEnd))
+    const { data, error } = await query
+    if (error) { setNoticeKind('error'); setNotice('Não foi possível carregar o resumo anual: ' + error.message); return false }
     setAnnualItems(data || [])
     return true
+  }
+
+  async function loadActivity() {
+    const { data } = await supabase.from('lancamento_historico').select('*').eq('conta_id', activeAccountId).order('ocorrido_em', { ascending: false }).limit(10)
+    setActivity(data || [])
   }
 
   async function loadExchangeRate() {
@@ -175,10 +192,7 @@ function Dashboard({ session }) {
 
   const totals = useMemo(() => items.reduce((accumulator, item) => {
     const valueInBrl = toBrl(item, exchange.rate)
-    if (valueInBrl === null) {
-      accumulator.hasUnconvertedEuro = true
-      return accumulator
-    }
+    if (valueInBrl === null) { accumulator.hasUnconvertedEuro = true; return accumulator }
     accumulator[item.tipo === 'Recebimento' ? 'income' : 'expenses'] += valueInBrl
     accumulator.byCategory[item.categoria] = (accumulator.byCategory[item.categoria] || 0) + (item.tipo === 'Recebimento' ? valueInBrl : -valueInBrl)
     return accumulator
@@ -204,53 +218,75 @@ function Dashboard({ session }) {
   function changeForm(field, value) { setForm(current => ({ ...current, [field]: value })) }
   function clearForm() { setForm(getInitialForm()); setEditing(null) }
 
+  async function refreshFinancialData() {
+    await Promise.all([loadItems(), loadAnnualItems(), activeAccountId !== 'personal' ? loadActivity() : Promise.resolve()])
+  }
+
   async function saveItem(event) {
     event.preventDefault()
     const value = Number(String(form.valor).replace(',', '.'))
     const category = form.categoria === 'Outros' ? form.categoriaOutro.trim() : form.categoria
-    if (!form.data || !form.descricao.trim() || !(value > 0)) {
-      setNoticeKind('error')
-      return setNotice('Preencha data, descrição e um valor superior a zero.')
-    }
-    if (!category) {
-      setNoticeKind('error')
-      return setNotice('Informe qual é a categoria em “Outros”.')
-    }
-    if (value > MAX_VALUE) {
-      setNoticeKind('error')
-      return setNotice(`O valor máximo permitido é ${formatMoney(MAX_VALUE, form.moeda)}.`)
-    }
+    if (!form.data || !form.descricao.trim() || !(value > 0)) { setNoticeKind('error'); return setNotice('Preencha data, descrição e um valor superior a zero.') }
+    if (!category) { setNoticeKind('error'); return setNotice('Informe qual é a categoria em “Outros”.') }
+    if (value > MAX_VALUE) { setNoticeKind('error'); return setNotice(`O valor máximo permitido é ${formatMoney(MAX_VALUE, form.moeda)}.`) }
     const wasEditing = Boolean(editing)
-    setBusy(true)
-    setNotice('')
-    const payload = { user_id: session.user.id, data: form.data, tipo: form.tipo, moeda: form.moeda, categoria: category, descricao: form.descricao.trim(), valor: value }
-    const request = wasEditing ? supabase.from('lancamentos').update(payload).eq('id', editing) : supabase.from('lancamentos').insert(payload)
-    const { error } = await request
+    setBusy(true); setNotice('')
+    const details = { data: form.data, tipo: form.tipo, moeda: form.moeda, categoria: category, descricao: form.descricao.trim(), valor: value }
+    const { error } = wasEditing
+      ? await supabase.from('lancamentos').update(details).eq('id', editing)
+      : await supabase.from('lancamentos').insert({ ...details, user_id: session.user.id, conta_id: activeAccountId === 'personal' ? null : activeAccountId })
     setBusy(false)
-    if (error) {
-      setNoticeKind('error')
-      return setNotice('Não foi possível guardar: ' + error.message)
-    }
-    clearForm()
-    await Promise.all([loadItems(), loadAnnualItems()])
-    setNoticeKind('success')
-    setNotice(wasEditing ? 'Alterações salvas com sucesso.' : 'Lançamento adicionado com sucesso.')
+    if (error) { setNoticeKind('error'); return setNotice('Não foi possível guardar: ' + error.message) }
+    clearForm(); await refreshFinancialData()
+    setNoticeKind('success'); setNotice(wasEditing ? 'Alterações salvas com sucesso.' : 'Lançamento adicionado com sucesso.')
     document.getElementById('historico')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
 
   async function removeItem(id) {
     if (!window.confirm('Excluir este lançamento?')) return
     const { error } = await supabase.from('lancamentos').delete().eq('id', id)
-    if (error) {
-      setNoticeKind('error')
-      return setNotice('Não foi possível excluir: ' + error.message)
+    if (error) { setNoticeKind('error'); return setNotice('Não foi possível excluir: ' + error.message) }
+    await refreshFinancialData()
+  }
+
+  async function createJointAccount(event) {
+    event.preventDefault()
+    if (!newAccountName.trim()) return
+    setAccountBusy(true); setAccountMessage('')
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const { data, error } = await supabase.from('contas').insert({ nome: newAccountName.trim(), owner_id: session.user.id, codigo_convite: makeInviteCode() }).select('id,nome,codigo_convite,owner_id').single()
+      if (!error) {
+        setAccounts(current => [...current, data])
+        setActiveAccountId(data.id)
+        setNewAccountName('')
+        setAccountBusy(false)
+        setAccountMessageKind('success')
+        setAccountMessage(`Conta criada. Compartilhe o código ${data.codigo_convite} com quem deve participar.`)
+        return
+      }
+      if (error.code !== '23505') {
+        setAccountBusy(false); setAccountMessageKind('error'); setAccountMessage(error.message); return
+      }
     }
-    await Promise.all([loadItems(), loadAnnualItems()])
+    setAccountBusy(false); setAccountMessageKind('error'); setAccountMessage('Não foi possível gerar um código único. Tente novamente.')
+  }
+
+  async function joinJointAccount(event) {
+    event.preventDefault()
+    if (!joinCode.trim()) return
+    setAccountBusy(true); setAccountMessage('')
+    const { data, error } = await supabase.rpc('entrar_conta_compartilhada', { p_codigo: joinCode.trim().toUpperCase() })
+    setAccountBusy(false)
+    if (error) { setAccountMessageKind('error'); setAccountMessage(error.message); return }
+    await loadAccounts()
+    setActiveAccountId(data)
+    setJoinCode('')
+    setAccountMessageKind('success'); setAccountMessage('Você entrou na conta conjunta com sucesso.')
   }
 
   function editItem(item) {
-    setEditing(item.id)
     const hasKnownCategory = CATEGORIAS.includes(item.categoria)
+    setEditing(item.id)
     setForm({ data: item.data, tipo: item.tipo, moeda: item.moeda || 'BRL', categoria: hasKnownCategory ? item.categoria : 'Outros', categoriaOutro: hasKnownCategory ? '' : item.categoria, descricao: item.descricao, valor: String(item.valor) })
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
@@ -260,56 +296,34 @@ function Dashboard({ session }) {
   const hasExchangeWarning = exchange.error || totals.hasUnconvertedEuro || annual.hasUnconvertedEuro
 
   return <main className="app-shell">
-    <header className="topbar"><div className="brand"><div className="brand-mark small">MF</div><span>Meu Fluxo</span></div>
-      <div className="user-actions"><span>Olá, {profile || '…'}</span><button className="text-button" onClick={logout}>Sair</button></div>
-    </header>
+    <header className="topbar"><div className="brand"><div className="brand-mark small">MF</div><span>Meu Fluxo</span></div><div className="user-actions"><span>Olá, {profile || '…'}</span><button className="text-button" onClick={logout}>Sair</button></div></header>
 
-    <section className="hero"><div><p className="eyebrow">VISÃO GERAL</p><h1>Como está o seu mês?</h1><p>{periodLabel}</p></div>
-      <div className="hero-side"><div className="period-picker"><button aria-label="Mês anterior" onClick={() => month === 0 ? (setMonth(11), setYear(year - 1)) : setMonth(month - 1)}>‹</button><strong>{periodLabel}</strong><button aria-label="Próximo mês" onClick={() => month === 11 ? (setMonth(0), setYear(year + 1)) : setMonth(month + 1)}>›</button></div>
-        <div className="currency-switch" aria-label="Moeda dos totais"><span>Ver totais em</span><button type="button" className={displayCurrency === 'EUR' ? 'active' : ''} onClick={() => setDisplayCurrency('EUR')}>€ Euro</button><button type="button" className={displayCurrency === 'BRL' ? 'active' : ''} onClick={() => setDisplayCurrency('BRL')}>R$ Real</button></div>
-        <ExchangeRate exchange={exchange} onRefresh={loadExchangeRate} />
+    <section className="account-toolbar"><div><p className="eyebrow">CONTA ATIVA</p><select value={activeAccountId} onChange={event => setActiveAccountId(event.target.value)}><option value="personal">Minha conta pessoal</option>{accounts.map(account => <option value={account.id} key={account.id}>{account.nome}</option>)}</select></div><button className="button secondary" type="button" onClick={() => setShowAccounts(current => !current)}>👥 Contas conjuntas</button></section>
+
+    {showAccounts && <section className="shared-account-card"><div className="section-heading"><div><p className="eyebrow">COMPARTILHAMENTO</p><h2>Contas conjuntas</h2><p className="section-subtitle">Cada pessoa entra com seu próprio e-mail. Toda alteração fica registrada com o nome de quem a fez.</p></div><button type="button" className="text-button" onClick={() => setShowAccounts(false)}>Fechar</button></div>
+      <div className="shared-account-grid"><form onSubmit={createJointAccount} className="account-form"><h3>Criar uma conta</h3><p>Crie uma conta para dividir despesas e receitas.</p><input value={newAccountName} onChange={event => setNewAccountName(event.target.value)} placeholder="Ex.: Casa da família" required /><button className="button primary" disabled={accountBusy}>{accountBusy ? 'Aguarde…' : 'Criar conta conjunta'}</button></form><form onSubmit={joinJointAccount} className="account-form"><h3>Entrar em uma conta</h3><p>Peça o código de convite a quem criou a conta.</p><input value={joinCode} onChange={event => setJoinCode(event.target.value.toUpperCase())} placeholder="Ex.: AB12-CD34" required /><button className="button secondary" disabled={accountBusy}>{accountBusy ? 'Aguarde…' : 'Entrar com código'}</button></form>
+        {activeAccount && <section className="invite-card"><h3>{activeAccount.nome}</h3>{activeAccount.owner_id === session.user.id ? <><p>Compartilhe este código com a outra pessoa:</p><strong>{activeAccount.codigo_convite}</strong></> : <p>Você participa desta conta conjunta.</p>}</section>}
       </div>
-    </section>
+      {accountMessage && <p className={'form-message ' + accountMessageKind}>{accountMessage}</p>}
+      {activeAccount && <section className="activity-section"><div><p className="eyebrow">AUDITORIA</p><h3>Atividade recente</h3></div>{activity.length ? <div className="activity-list">{activity.map(log => <div className="activity-item" key={log.id}><span className={'activity-dot ' + log.acao} /><p><strong>{log.autor_nome || 'Participante'}</strong> {actionLabel(log.acao)} um lançamento</p><time>{new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(log.ocorrido_em))}</time></div>)}</div> : <p className="muted">Ainda não há alterações nessa conta.</p>}</section>}
+    </section>}
+
+    <section className="hero"><div><p className="eyebrow">VISÃO GERAL</p><h1>Como está o seu mês?</h1><p>{activeAccount ? `${activeAccount.nome} · ${periodLabel}` : periodLabel}</p></div><div className="hero-side"><div className="period-picker"><button aria-label="Mês anterior" onClick={() => month === 0 ? (setMonth(11), setYear(year - 1)) : setMonth(month - 1)}>‹</button><strong>{periodLabel}</strong><button aria-label="Próximo mês" onClick={() => month === 11 ? (setMonth(0), setYear(year + 1)) : setMonth(month + 1)}>›</button></div><div className="currency-switch" aria-label="Moeda dos totais"><span>Ver totais em</span><button type="button" className={displayCurrency === 'EUR' ? 'active' : ''} onClick={() => setDisplayCurrency('EUR')}>€ Euro</button><button type="button" className={displayCurrency === 'BRL' ? 'active' : ''} onClick={() => setDisplayCurrency('BRL')}>R$ Real</button></div><ExchangeRate exchange={exchange} onRefresh={loadExchangeRate} /></div></section>
 
     {hasExchangeWarning && <p className="exchange-warning">A cotação em euro está indisponível no momento. Valores em euro não entram nos totais até a atualização ser concluída.</p>}
+    <section className="summary-grid summary-grid-four"><SummaryCard title="Entradas" value={displayValue(totals.income)} currency={displayCurrency} icon="↗" tone="income" caption={`Convertido para ${currencyName}`} /><SummaryCard title="Despesas" value={displayValue(totals.expenses)} currency={displayCurrency} icon="↘" tone="expense" caption={`Convertido para ${currencyName}`} /><SummaryCard title="Saldo do mês" value={displayValue(balance)} currency={displayCurrency} icon="◎" tone={balance >= 0 ? 'balance' : 'expense'} caption={`Convertido para ${currencyName}`} /><SummaryCard title={`Gastos em ${year}`} value={displayValue(annual.total)} currency={displayCurrency} icon="◷" tone="annual" caption={`Ano completo em ${currencyName}`} /></section>
 
-    <section className="summary-grid summary-grid-four">
-      <SummaryCard title="Entradas" value={displayValue(totals.income)} currency={displayCurrency} icon="↗" tone="income" caption={`Convertido para ${currencyName}`} />
-      <SummaryCard title="Despesas" value={displayValue(totals.expenses)} currency={displayCurrency} icon="↘" tone="expense" caption={`Convertido para ${currencyName}`} />
-      <SummaryCard title="Saldo do mês" value={displayValue(balance)} currency={displayCurrency} icon="◎" tone={balance >= 0 ? 'balance' : 'expense'} caption={`Convertido para ${currencyName}`} />
-      <SummaryCard title={`Gastos em ${year}`} value={displayValue(annual.total)} currency={displayCurrency} icon="◷" tone="annual" caption={`Ano completo em ${currencyName}`} />
-    </section>
+    <section className="content-grid"><form className="entry-card" onSubmit={saveItem}><div className="section-heading"><div><p className="eyebrow">{editing ? 'A EDITAR' : 'NOVO LANÇAMENTO'}</p><h2>{editing ? 'Atualize o lançamento' : 'Registre um movimento'}</h2></div>{editing && <button type="button" className="text-button" onClick={clearForm}>Cancelar</button>}</div><div className="entry-grid"><label>Data<input type="date" value={form.data} onChange={event => changeForm('data', event.target.value)} required /></label><label>Tipo<select value={form.tipo} onChange={event => changeForm('tipo', event.target.value)}><option>Gasto</option><option>Recebimento</option></select></label><label>Moeda<select value={form.moeda} onChange={event => changeForm('moeda', event.target.value)}><option value="BRL">Real brasileiro (R$)</option><option value="EUR">Euro (€)</option></select></label><label>Categoria<select value={form.categoria} onChange={event => changeForm('categoria', event.target.value)}>{CATEGORIAS.map(category => <option key={category}>{category}</option>)}</select></label>{form.categoria === 'Outros' && <label className="span-all">Qual categoria?<input value={form.categoriaOutro} onChange={event => changeForm('categoriaOutro', event.target.value)} placeholder="Ex.: Animais, presente, manutenção…" required /></label>}<label>Valor ({form.moeda === 'EUR' ? '€' : 'R$'})<input inputMode="decimal" value={form.valor} onChange={event => changeForm('valor', event.target.value)} placeholder="0,00" required /></label><label className="span-all">Descrição<input value={form.descricao} onChange={event => changeForm('descricao', event.target.value)} placeholder="Ex.: Compras do supermercado" required /></label></div>{form.moeda === 'EUR' && <p className="conversion-preview">{exchange.rate ? `Cotação de hoje: € 1 = ${formatMoney(exchange.rate)}. Este lançamento será exibido em real com a taxa atual.` : 'Buscando a cotação atual do euro…'}</p>}{notice && <p className={'form-message ' + noticeKind}>{notice}</p>}<button className="button primary" disabled={busy}>{busy ? 'A guardar…' : editing ? 'Guardar alterações' : 'Adicionar lançamento'}</button></form>
+      <section className="category-card"><div className="section-heading"><div><p className="eyebrow">ANÁLISE DO MÊS</p><h2>Por categoria</h2></div></div>{Object.keys(totals.byCategory).length ? <div className="category-list">{Object.entries(totals.byCategory).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).map(([category, value]) => <div className="category-row" key={category}><span>{category}</span><strong className={value >= 0 ? 'positive' : 'negative'}>{value >= 0 ? '+' : '−'} {displayValue(Math.abs(value)) === null ? '—' : formatMoney(displayValue(Math.abs(value)), displayCurrency)}</strong></div>)}</div> : <Empty text="Ainda não existem movimentos neste mês." />}</section></section>
 
-    <section className="content-grid">
-      <form className="entry-card" onSubmit={saveItem}><div className="section-heading"><div><p className="eyebrow">{editing ? 'A EDITAR' : 'NOVO LANÇAMENTO'}</p><h2>{editing ? 'Atualize o lançamento' : 'Registre um movimento'}</h2></div>{editing && <button type="button" className="text-button" onClick={clearForm}>Cancelar</button>}</div>
-        <div className="entry-grid"><label>Data<input type="date" value={form.data} onChange={event => changeForm('data', event.target.value)} required /></label>
-          <label>Tipo<select value={form.tipo} onChange={event => changeForm('tipo', event.target.value)}><option>Gasto</option><option>Recebimento</option></select></label>
-          <label>Moeda<select value={form.moeda} onChange={event => changeForm('moeda', event.target.value)}><option value="BRL">Real brasileiro (R$)</option><option value="EUR">Euro (€)</option></select></label>
-          <label>Categoria<select value={form.categoria} onChange={event => changeForm('categoria', event.target.value)}>{CATEGORIAS.map(category => <option key={category}>{category}</option>)}</select></label>
-          {form.categoria === 'Outros' && <label className="span-all">Qual categoria?<input value={form.categoriaOutro} onChange={event => changeForm('categoriaOutro', event.target.value)} placeholder="Ex.: Animais, presente, manutenção…" required /></label>}
-          <label>Valor ({form.moeda === 'EUR' ? '€' : 'R$'})<input inputMode="decimal" value={form.valor} onChange={event => changeForm('valor', event.target.value)} placeholder="0,00" required /></label>
-          <label className="span-all">Descrição<input value={form.descricao} onChange={event => changeForm('descricao', event.target.value)} placeholder="Ex.: Compras do supermercado" required /></label>
-        </div>
-        {form.moeda === 'EUR' && <p className="conversion-preview">{exchange.rate ? `Cotação de hoje: € 1 = ${formatMoney(exchange.rate)}. Este lançamento será exibido em real com a taxa atual.` : 'Buscando a cotação atual do euro…'}</p>}
-        {notice && <p className={'form-message ' + noticeKind}>{notice}</p>}<button className="button primary" disabled={busy}>{busy ? 'A guardar…' : editing ? 'Guardar alterações' : 'Adicionar lançamento'}</button>
-      </form>
+    <section className="annual-card"><div className="section-heading"><div><p className="eyebrow">VISÃO ANUAL</p><h2>Gastos de {year}</h2><p className="section-subtitle">Todos os gastos, agrupados por mês e convertidos para {currencyName} na cotação atual.</p></div><strong className="annual-total">{displayValue(annual.total) === null ? '—' : formatMoney(displayValue(annual.total), displayCurrency)}</strong></div><div className="annual-chart">{annual.byMonth.map(item => <div className="month-column" key={item.month}><span className="bar-value">{item.total ? (displayValue(item.total) === null ? '—' : formatMoney(displayValue(item.total), displayCurrency)) : ''}</span><div className="bar-track"><div className="bar-fill" style={{ height: `${(item.total / annualMax) * 100}%` }} /></div><span>{shortMonthFormatter.format(new Date(year, item.month, 1)).replace('.', '')}</span></div>)}</div></section>
 
-      <section className="category-card"><div className="section-heading"><div><p className="eyebrow">ANÁLISE DO MÊS</p><h2>Por categoria</h2></div></div>
-        {Object.keys(totals.byCategory).length ? <div className="category-list">{Object.entries(totals.byCategory).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).map(([category, value]) => <div className="category-row" key={category}><span>{category}</span><strong className={value >= 0 ? 'positive' : 'negative'}>{value >= 0 ? '+' : '−'} {displayValue(Math.abs(value)) === null ? '—' : formatMoney(displayValue(Math.abs(value)), displayCurrency)}</strong></div>)}</div> : <Empty text="Ainda não existem movimentos neste mês." />}
-      </section>
-    </section>
-
-    <section className="annual-card"><div className="section-heading"><div><p className="eyebrow">VISÃO ANUAL</p><h2>Gastos de {year}</h2><p className="section-subtitle">Todos os gastos, agrupados por mês e convertidos para {currencyName} na cotação atual.</p></div><strong className="annual-total">{displayValue(annual.total) === null ? '—' : formatMoney(displayValue(annual.total), displayCurrency)}</strong></div>
-      <div className="annual-chart">{annual.byMonth.map(item => <div className="month-column" key={item.month}><span className="bar-value">{item.total ? (displayValue(item.total) === null ? '—' : formatMoney(displayValue(item.total), displayCurrency)) : ''}</span><div className="bar-track"><div className="bar-fill" style={{ height: `${(item.total / annualMax) * 100}%` }} /></div><span>{shortMonthFormatter.format(new Date(year, item.month, 1)).replace('.', '')}</span></div>)}</div>
-    </section>
-
-    <section className="transactions-card" id="historico"><div className="section-heading"><div><p className="eyebrow">HISTÓRICO</p><h2>Lançamentos de {periodLabel}</h2></div><span className="count">{items.length} {items.length === 1 ? 'movimento' : 'movimentos'}</span></div>
-      {items.length ? <div className="table-wrap"><table><thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Tipo</th><th>Valor informado</th><th>Em real hoje</th><th><span className="sr-only">Ações</span></th></tr></thead><tbody>{items.map(item => {
-        const converted = toBrl(item, exchange.rate)
-        return <tr key={item.id}><td>{dateFormatter.format(new Date(`${item.data}T12:00:00`))}</td><td><strong>{item.descricao}</strong></td><td>{item.categoria}</td><td><span className={'pill ' + (item.tipo === 'Recebimento' ? 'income' : 'expense')}>{item.tipo}</span></td><td className={item.tipo === 'Recebimento' ? 'positive' : 'negative'}>{item.tipo === 'Recebimento' ? '+' : '−'} {formatMoney(item.valor, item.moeda || 'BRL')}</td><td>{item.moeda === 'EUR' ? (converted === null ? 'Cotação indisponível' : formatMoney(converted)) : '—'}</td><td className="row-actions"><button onClick={() => editItem(item)}>Editar</button><button onClick={() => removeItem(item.id)} className="delete">Excluir</button></td></tr>
-      })}</tbody></table></div> : <Empty text="Sem lançamentos para este mês. Use o formulário acima para adicionar o primeiro." />}
-    </section>
+    <section className="transactions-card" id="historico"><div className="section-heading"><div><p className="eyebrow">HISTÓRICO</p><h2>Lançamentos de {periodLabel}</h2></div><span className="count">{items.length} {items.length === 1 ? 'movimento' : 'movimentos'}</span></div>{items.length ? <div className="table-wrap"><table><thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Tipo</th><th>Valor informado</th><th>Em real hoje</th><th><span className="sr-only">Ações</span></th></tr></thead><tbody>{items.map(item => { const converted = toBrl(item, exchange.rate); return <tr key={item.id}><td>{dateFormatter.format(new Date(`${item.data}T12:00:00`))}</td><td><strong>{item.descricao}</strong></td><td>{item.categoria}</td><td><span className={'pill ' + (item.tipo === 'Recebimento' ? 'income' : 'expense')}>{item.tipo}</span></td><td className={item.tipo === 'Recebimento' ? 'positive' : 'negative'}>{item.tipo === 'Recebimento' ? '+' : '−'} {formatMoney(item.valor, item.moeda || 'BRL')}</td><td>{item.moeda === 'EUR' ? (converted === null ? 'Cotação indisponível' : formatMoney(converted)) : '—'}</td><td className="row-actions"><button onClick={() => editItem(item)}>Editar</button><button onClick={() => removeItem(item.id)} className="delete">Excluir</button></td></tr> })}</tbody></table></div> : <Empty text="Sem lançamentos para este mês. Use o formulário acima para adicionar o primeiro." />}</section>
   </main>
+}
+
+function actionLabel(action) {
+  return ({ criou: 'criou', editou: 'editou', excluiu: 'excluiu' })[action] || 'alterou'
 }
 
 function ExchangeRate({ exchange, onRefresh }) {

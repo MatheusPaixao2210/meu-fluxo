@@ -4,7 +4,7 @@ Aplicação React com autenticação e dados individuais no Supabase. Cada pesso
 
 ## Preparação
 
-1. Crie um projeto em [Supabase](https://supabase.com) e execute [`supabase/schema.sql`](supabase/schema.sql) no **SQL Editor**. Se você já executou o SQL antes, execute apenas [`supabase/migration-moedas-eur.sql`](supabase/migration-moedas-eur.sql) para adicionar suporte a real e euro.
+1. Crie um projeto em [Supabase](https://supabase.com) e execute [`supabase/schema.sql`](supabase/schema.sql) no **SQL Editor**. Se você já executou o SQL antes, execute [`supabase/migration-moedas-eur.sql`](supabase/migration-moedas-eur.sql) e depois [`supabase/migration-contas-conjuntas.sql`](supabase/migration-contas-conjuntas.sql).
 2. Em **Authentication > Providers > Email**, ative o login por e-mail. Para desenvolvimento, pode desativar a confirmação de e-mail; em produção, mantenha-a ativa.
 3. Copie `.env.example` para `.env` e informe a URL e a chave `anon` do projeto Supabase.
 4. Execute `npm.cmd install` e depois `npm.cmd run dev`.
@@ -16,3 +16,7 @@ Para publicar, importe este repositório na Vercel e crie as variáveis `VITE_SU
 ## Cotação EUR/BRL
 
 O sistema consulta a cotação de referência EUR/BRL diretamente na API pública [Frankfurter](https://frankfurter.dev/), sem chave e sem salvar uma taxa fixa. Por isso, cada total em reais de um lançamento em euro usa a cotação disponível no dia em que a página foi aberta ou atualizada.
+
+## Contas conjuntas
+
+Cada integrante cria sua própria conta com e-mail e senha. Quem criar uma conta conjunta recebe um código de convite; a outra pessoa usa esse código na área **Contas conjuntas**. Lançamentos da conta conjunta podem ser visualizados e alterados por todos os membros, e o painel de auditoria registra quem criou, editou ou excluiu cada lançamento.
