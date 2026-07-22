@@ -284,6 +284,26 @@ function Dashboard({ session }) {
     setAccountMessageKind('success'); setAccountMessage('Você entrou na conta conjunta com sucesso.')
   }
 
+  async function deleteJointAccount() {
+    if (!activeAccount || activeAccount.owner_id !== session.user.id) return
+    const confirmed = window.confirm(`Encerrar a conta conjunta “${activeAccount.nome}”? Os lançamentos serão preservados, mas o compartilhamento e o histórico conjunto deixarão de ficar disponíveis.`)
+    if (!confirmed) return
+    setAccountBusy(true)
+    setAccountMessage('')
+    const { error } = await supabase.from('contas').delete().eq('id', activeAccount.id)
+    setAccountBusy(false)
+    if (error) {
+      setAccountMessageKind('error')
+      setAccountMessage('Não foi possível encerrar a conta: ' + error.message)
+      return
+    }
+    setAccounts(current => current.filter(account => account.id !== activeAccount.id))
+    setActiveAccountId('personal')
+    setActivity([])
+    setAccountMessageKind('success')
+    setAccountMessage('Conta conjunta encerrada. Os lançamentos foram preservados nas contas pessoais de quem os criou.')
+  }
+
   function editItem(item) {
     const hasKnownCategory = CATEGORIAS.includes(item.categoria)
     setEditing(item.id)
@@ -298,11 +318,11 @@ function Dashboard({ session }) {
   return <main className="app-shell">
     <header className="topbar"><div className="brand"><div className="brand-mark small">MF</div><span>Meu Fluxo</span></div><div className="user-actions"><span>Olá, {profile || '…'}</span><button className="text-button" onClick={logout}>Sair</button></div></header>
 
-    <section className="account-toolbar"><div><p className="eyebrow">CONTA ATIVA</p><select value={activeAccountId} onChange={event => setActiveAccountId(event.target.value)}><option value="personal">Minha conta pessoal</option>{accounts.map(account => <option value={account.id} key={account.id}>{account.nome}</option>)}</select></div><button className="button secondary" type="button" onClick={() => setShowAccounts(current => !current)}>👥 Contas conjuntas</button></section>
+    <section className="account-toolbar"><div><p className="eyebrow">CONTA ATIVA</p><select value={activeAccountId} onChange={event => setActiveAccountId(event.target.value)}><option value="personal">Minha conta pessoal</option>{accounts.map(account => <option value={account.id} key={account.id}>{account.nome}</option>)}</select></div><button className="button secondary" type="button" onClick={() => setShowAccounts(current => !current)}>Contas conjuntas</button></section>
 
     {showAccounts && <section className="shared-account-card"><div className="section-heading"><div><p className="eyebrow">COMPARTILHAMENTO</p><h2>Contas conjuntas</h2><p className="section-subtitle">Cada pessoa entra com seu próprio e-mail. Toda alteração fica registrada com o nome de quem a fez.</p></div><button type="button" className="text-button" onClick={() => setShowAccounts(false)}>Fechar</button></div>
       <div className="shared-account-grid"><form onSubmit={createJointAccount} className="account-form"><h3>Criar uma conta</h3><p>Crie uma conta para dividir despesas e receitas.</p><input value={newAccountName} onChange={event => setNewAccountName(event.target.value)} placeholder="Ex.: Casa da família" required /><button className="button primary" disabled={accountBusy}>{accountBusy ? 'Aguarde…' : 'Criar conta conjunta'}</button></form><form onSubmit={joinJointAccount} className="account-form"><h3>Entrar em uma conta</h3><p>Peça o código de convite a quem criou a conta.</p><input value={joinCode} onChange={event => setJoinCode(event.target.value.toUpperCase())} placeholder="Ex.: AB12-CD34" required /><button className="button secondary" disabled={accountBusy}>{accountBusy ? 'Aguarde…' : 'Entrar com código'}</button></form>
-        {activeAccount && <section className="invite-card"><h3>{activeAccount.nome}</h3>{activeAccount.owner_id === session.user.id ? <><p>Compartilhe este código com a outra pessoa:</p><strong>{activeAccount.codigo_convite}</strong></> : <p>Você participa desta conta conjunta.</p>}</section>}
+        {activeAccount && <section className="invite-card"><div className="account-card-title"><h3>{activeAccount.nome}</h3>{activeAccount.owner_id === session.user.id && <span className="admin-badge">Administrador</span>}</div>{activeAccount.owner_id === session.user.id ? <><p>Compartilhe este código com a outra pessoa:</p><strong>{activeAccount.codigo_convite}</strong><button type="button" className="button danger" onClick={deleteJointAccount} disabled={accountBusy}>Encerrar conta conjunta</button></> : <p>Você participa desta conta conjunta. Apenas quem criou a conta pode encerrá-la.</p>}</section>}
       </div>
       {accountMessage && <p className={'form-message ' + accountMessageKind}>{accountMessage}</p>}
       {activeAccount && <section className="activity-section"><div><p className="eyebrow">AUDITORIA</p><h3>Atividade recente</h3></div>{activity.length ? <div className="activity-list">{activity.map(log => <div className="activity-item" key={log.id}><span className={'activity-dot ' + log.acao} /><p><strong>{log.autor_nome || 'Participante'}</strong> {actionLabel(log.acao)} um lançamento</p><time>{new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(log.ocorrido_em))}</time></div>)}</div> : <p className="muted">Ainda não há alterações nessa conta.</p>}</section>}
