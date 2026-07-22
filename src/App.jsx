@@ -11,7 +11,7 @@ const shortMonthFormatter = new Intl.DateTimeFormat('pt-BR', { month: 'short' })
 const dateFormatter = new Intl.DateTimeFormat('pt-BR')
 
 function getInitialForm() {
-  return { data: new Date().toISOString().slice(0, 10), tipo: 'Gasto', moeda: 'BRL', categoria: 'Alimentação', categoriaOutro: '', descricao: '', valor: '' }
+  return { data: new Date().toISOString().slice(0, 10), tipo: 'Gasto', moeda: 'EUR', categoria: 'Alimentação', categoriaOutro: '', descricao: '', valor: '' }
 }
 
 function formatMoney(value, currency = 'BRL') {
@@ -42,7 +42,8 @@ function normalizeImportText(value) {
 }
 
 function importValue(row, names) {
-  return names.map(name => row[name]).find(value => value !== undefined && value !== null && String(value).trim() !== '')
+  const key = Object.keys(row).find(column => names.some(name => column === name || column.startsWith(`${name} `) || column.startsWith(`${name}(`)))
+  return key === undefined ? undefined : row[key]
 }
 
 function importDate(value) {
@@ -81,8 +82,8 @@ function parseImportedRows(records) {
   const issues = []
   records.slice(0, MAX_IMPORT_ROWS).forEach((source, index) => {
     const row = Object.fromEntries(Object.entries(source).map(([key, value]) => [normalizeImportText(key), value]))
-    const date = importDate(importValue(row, ['data', 'date', 'data do lancamento', 'data lancamento']))
-    const directValue = importValue(row, ['valor', 'value', 'amount', 'quantia', 'montante'])
+    const date = importDate(importValue(row, ['data', 'date', 'data do lancamento', 'data lancamento', 'data movimento', 'data operacao', 'transaction date', 'booking date']))
+    const directValue = importValue(row, ['valor', 'value', 'amount', 'quantia', 'montante', 'valor movimento'])
     const debitValue = importValue(row, ['debito', 'despesa', 'saida', 'saidas'])
     const creditValue = importValue(row, ['credito', 'receita', 'entrada', 'entradas'])
     const rawValue = directValue ?? debitValue ?? creditValue
@@ -91,15 +92,15 @@ function parseImportedRows(records) {
       issues.push(`Linha ${index + 2}: data ou valor inválido.`)
       return
     }
-    const rawType = normalizeImportText(importValue(row, ['tipo', 'type', 'natureza']))
+    const rawType = normalizeImportText(importValue(row, ['tipo', 'type', 'natureza', 'movimento']))
     const tipo = amount < 0 || /gasto|despesa|debito|saida/.test(rawType)
       ? 'Gasto'
       : /recebimento|receita|entrada|credito|income/.test(rawType) || (directValue === undefined && creditValue !== undefined)
         ? 'Recebimento'
         : 'Gasto'
-    const importedCategory = String(importValue(row, ['categoria', 'category', 'grupo']) ?? '').trim()
+    const importedCategory = String(importValue(row, ['categoria', 'category', 'grupo', 'subcategoria']) ?? '').trim()
     const categoria = CATEGORIAS.find(category => normalizeImportText(category) === normalizeImportText(importedCategory)) || importedCategory || 'Outros'
-    const descricao = String(importValue(row, ['descricao', 'description', 'historico', 'memo', 'nome', 'lancamento']) ?? (importedCategory || 'Lançamento importado')).trim()
+    const descricao = String(importValue(row, ['descricao', 'description', 'historico', 'memo', 'nome', 'lancamento', 'detalhe', 'details']) ?? (importedCategory || 'Lançamento importado')).trim()
     const currency = normalizeImportText(importValue(row, ['moeda', 'currency', 'divisa']))
     rows.push({ data: date, tipo, categoria, descricao, valor: Math.abs(amount), moeda: /eur|euro|€/.test(currency) ? 'EUR' : 'BRL' })
   })
@@ -168,6 +169,7 @@ function Dashboard({ session }) {
   const [year, setYear] = useState(today.getFullYear())
   const [items, setItems] = useState([])
   const [annualItems, setAnnualItems] = useState([])
+  const [savedCategories, setSavedCategories] = useState([])
   const [accounts, setAccounts] = useState([])
   const [activeAccountId, setActiveAccountId] = useState('personal')
   const [showAccountPicker, setShowAccountPicker] = useState(false)
@@ -205,6 +207,7 @@ function Dashboard({ session }) {
   useEffect(() => { loadProfile(); loadAccounts() }, [])
   useEffect(() => { loadItems() }, [periodStart, periodEnd, activeAccountId])
   useEffect(() => { loadAnnualItems() }, [yearStart, yearEnd, activeAccountId])
+  useEffect(() => { loadCategories() }, [activeAccountId])
   useEffect(() => { loadGoals() }, [activeAccountId])
   useEffect(() => { if (activeAccountId === 'personal') setActivity([]); else loadActivity() }, [activeAccountId])
   useEffect(() => {
@@ -232,11 +235,13 @@ function Dashboard({ session }) {
     return true
   }
 
-  function queryForActiveAccount(query) {
-    return activeAccountId === 'personal'
+  function queryForAccount(query, accountId) {
+    return accountId === 'personal'
       ? query.eq('user_id', session.user.id).is('conta_id', null)
-      : query.eq('conta_id', activeAccountId)
+      : query.eq('conta_id', accountId)
   }
+
+  function queryForActiveAccount(query) { return queryForAccount(query, activeAccountId) }
 
   async function loadItems() {
     const query = queryForActiveAccount(supabase.from('lancamentos').select('*').gte('data', periodStart).lt('data', periodEnd).order('data', { ascending: false }).order('created_at', { ascending: false }))
@@ -252,6 +257,13 @@ function Dashboard({ session }) {
     if (error) { setNoticeKind('error'); setNotice('Não foi possível carregar o resumo anual: ' + error.message); return false }
     setAnnualItems(data || [])
     return true
+  }
+
+  async function loadCategories() {
+    const query = queryForActiveAccount(supabase.from('categorias').select('nome').order('nome'))
+    const { data, error } = await query
+    if (error) return setSavedCategories([])
+    setSavedCategories((data || []).map(category => category.nome))
   }
 
   async function loadGoals() {
@@ -307,6 +319,7 @@ function Dashboard({ session }) {
     .filter(([, value]) => value < 0)
     .map(([name, value]) => ({ name, value: Math.abs(value) }))
     .sort((a, b) => b.value - a.value), [totals.byCategory])
+  const categoryOptions = useMemo(() => [...CATEGORIAS, ...savedCategories].filter((category, index, list) => list.findIndex(item => normalizeImportText(item) === normalizeImportText(category)) === index), [savedCategories])
 
   function changeForm(field, value) { setForm(current => ({ ...current, [field]: value })) }
   function clearForm() { setForm(getInitialForm()); setEditing(null) }
@@ -319,6 +332,25 @@ function Dashboard({ session }) {
     await Promise.all([loadItems(), loadAnnualItems(), activeAccountId !== 'personal' ? loadActivity() : Promise.resolve()])
   }
 
+  function entrySignature(entry) {
+    return [entry.data, entry.tipo, entry.moeda || 'BRL', normalizeImportText(entry.categoria), normalizeImportText(entry.descricao), Number(entry.valor).toFixed(2)].join('|')
+  }
+
+  async function duplicateAlreadyExists(entry, accountId = activeAccountId) {
+    const query = queryForAccount(supabase.from('lancamentos').select('data,tipo,moeda,categoria,descricao,valor').eq('data', entry.data).eq('tipo', entry.tipo).eq('moeda', entry.moeda).eq('categoria', entry.categoria).eq('descricao', entry.descricao).eq('valor', entry.valor).limit(1), accountId)
+    const { data, error } = await query
+    return !error && Boolean(data?.length)
+  }
+
+  async function saveCustomCategory(category, accountId = activeAccountId) {
+    const name = String(category || '').trim()
+    if (!name || CATEGORIAS.some(item => normalizeImportText(item) === normalizeImportText(name))) return true
+    const existing = await queryForAccount(supabase.from('categorias').select('id').eq('nome', name).limit(1), accountId)
+    if (existing.data?.length) return true
+    const { error } = await supabase.from('categorias').insert({ user_id: session.user.id, conta_id: accountId === 'personal' ? null : accountId, nome: name })
+    return !error || error.code === '23505'
+  }
+
   async function saveItem(event) {
     event.preventDefault()
     const value = Number(String(form.valor).replace(',', '.'))
@@ -327,15 +359,21 @@ function Dashboard({ session }) {
     if (!category) { setNoticeKind('error'); return setNotice('Informe qual é a categoria em “Outros”.') }
     if (value > MAX_VALUE) { setNoticeKind('error'); return setNotice(`O valor máximo permitido é ${formatMoney(MAX_VALUE, form.moeda)}.`) }
     const wasEditing = Boolean(editing)
-    setBusy(true); setNotice('')
     const details = { data: form.data, tipo: form.tipo, moeda: form.moeda, categoria: category, descricao: form.descricao.trim(), valor: value }
+    if (!wasEditing && await duplicateAlreadyExists(details)) {
+      const shouldContinue = window.confirm('Este lançamento é igual a um lançamento anterior da mesma conta. Deseja continuar mesmo assim?')
+      if (!shouldContinue) return
+    }
+    setBusy(true); setNotice('')
     const { error } = wasEditing
       ? await supabase.from('lancamentos').update(details).eq('id', editing)
       : await supabase.from('lancamentos').insert({ ...details, user_id: session.user.id, conta_id: activeAccountId === 'personal' ? null : activeAccountId })
     setBusy(false)
     if (error) { setNoticeKind('error'); return setNotice('Não foi possível guardar: ' + error.message) }
-    clearForm(); await refreshFinancialData()
+    const categoryWasSaved = await saveCustomCategory(category)
+    clearForm(); await Promise.all([refreshFinancialData(), loadCategories()])
     setNoticeKind('success'); setNotice(wasEditing ? 'Alterações salvas com sucesso.' : 'Lançamento adicionado com sucesso.')
+    if (!categoryWasSaved) setNotice('Lançamento adicionado, mas a nova categoria não pôde ser salva. Execute a migração de categorias no Supabase.')
     document.getElementById('historico')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
 
@@ -384,6 +422,18 @@ function Dashboard({ session }) {
 
   async function saveImportedItems() {
     if (!importRows.length) return
+    const importDates = [...new Set(importRows.map(row => row.data))]
+    const query = queryForAccount(supabase.from('lancamentos').select('data,tipo,moeda,categoria,descricao,valor').in('data', importDates), importAccountId)
+    const { data: existingItems } = await query
+    const existingSignatures = new Set((existingItems || []).map(entrySignature))
+    const importedSignatures = new Set()
+    const duplicateCount = importRows.reduce((count, row) => {
+      const signature = entrySignature(row)
+      const repeated = existingSignatures.has(signature) || importedSignatures.has(signature)
+      importedSignatures.add(signature)
+      return count + (repeated ? 1 : 0)
+    }, 0)
+    if (duplicateCount && !window.confirm(`${duplicateCount} lançamento(s) do arquivo já existe(m) nesta conta ou está(ão) repetido(s) no próprio arquivo. Deseja continuar mesmo assim?`)) return
     setImportBusy(true)
     setNotice('')
     const payload = importRows.map(row => ({ ...row, user_id: session.user.id, conta_id: importAccountId === 'personal' ? null : importAccountId }))
@@ -397,7 +447,8 @@ function Dashboard({ session }) {
       setImportFileName('')
       setNoticeKind('success')
       setNotice(`${payload.length} lançamentos foram importados com sucesso.`)
-      await refreshFinancialData()
+      await Promise.all([refreshFinancialData(), ...[...new Set(importRows.map(row => row.categoria))].map(category => saveCustomCategory(category, importAccountId))])
+      await loadCategories()
       document.getElementById('historico')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     } catch (error) {
       setNoticeKind('error')
@@ -541,7 +592,23 @@ function Dashboard({ session }) {
     {hasExchangeWarning && <p className="exchange-warning">A cotação em euro está indisponível no momento. Valores em euro não entram nos totais até a atualização ser concluída.</p>}
     <section className="summary-grid summary-grid-four"><SummaryCard title="Saldo do mês" value={displayValue(balance)} currency={displayCurrency} icon="◎" tone={balance >= 0 ? 'balance' : 'expense'} caption={`Convertido para ${currencyName}`} /><SummaryCard title="Entradas" value={displayValue(totals.income)} currency={displayCurrency} icon="↗" tone="income" caption={`Convertido para ${currencyName}`} /><SummaryCard title="Despesas" value={displayValue(totals.expenses)} currency={displayCurrency} icon="↘" tone="expense" caption={`Convertido para ${currencyName}`} /><SummaryCard title={`Gastos em ${year}`} value={displayValue(annual.total)} currency={displayCurrency} icon="◷" tone="annual" caption={`Ano completo em ${currencyName}`} /><button type="button" className="add-entry-card" onClick={openEntryForm}><span>+</span><strong>Novo lançamento</strong><small>Registre entradas ou despesas</small></button></section>
 
-    <section className={`content-grid ${showEntryForm ? 'form-open' : 'form-closed'}`}>{showEntryForm && <form className="entry-card" id="novo-lancamento" onSubmit={saveItem}><div className="section-heading"><div><p className="eyebrow">{editing ? 'A EDITAR' : 'NOVO LANÇAMENTO'}</p><h2>{editing ? 'Atualize o lançamento' : 'Registre um movimento'}</h2></div><button type="button" className="text-button" onClick={() => { clearForm(); setShowEntryForm(false) }}>Fechar</button></div><div className="entry-grid"><label>Data<input type="date" value={form.data} onChange={event => changeForm('data', event.target.value)} required /></label><label>Tipo<select value={form.tipo} onChange={event => changeForm('tipo', event.target.value)}><option>Gasto</option><option>Recebimento</option></select></label><label>Moeda<select value={form.moeda} onChange={event => changeForm('moeda', event.target.value)}><option value="BRL">Real brasileiro (R$)</option><option value="EUR">Euro (€)</option></select></label><label>Categoria<select value={form.categoria} onChange={event => changeForm('categoria', event.target.value)}>{CATEGORIAS.map(category => <option key={category}>{category}</option>)}</select></label>{form.categoria === 'Outros' && <label className="span-all">Qual categoria?<input value={form.categoriaOutro} onChange={event => changeForm('categoriaOutro', event.target.value)} placeholder="Ex.: Animais, presente, manutenção…" required /></label>}<label>Valor ({form.moeda === 'EUR' ? '€' : 'R$'})<input inputMode="decimal" value={form.valor} onChange={event => changeForm('valor', event.target.value)} placeholder="0,00" required /></label><label className="span-all">Descrição<input value={form.descricao} onChange={event => changeForm('descricao', event.target.value)} placeholder="Ex.: Compras do supermercado" required /></label></div>{form.moeda === 'EUR' && <p className="conversion-preview">{exchange.rate ? `Cotação de hoje: € 1 = ${formatMoney(exchange.rate)}. Este lançamento será exibido em real com a taxa atual.` : 'Buscando a cotação atual do euro…'}</p>}{notice && <p className={'form-message ' + noticeKind}>{notice}</p>}<button className="button primary" disabled={busy}>{busy ? 'A guardar…' : editing ? 'Guardar alterações' : 'Adicionar lançamento'}</button><ImportPanel fileName={importFileName} rows={importRows} issues={importIssues} busy={importBusy} accountName={activeAccount?.nome || 'minha conta pessoal'} onFileChange={readImportFile} onRemoveRow={removeImportedRow} onImport={saveImportedItems} /></form>}
+    <section className={`content-grid ${showEntryForm ? 'form-open' : 'form-closed'}`}>
+      {showEntryForm && <form className="entry-card" id="novo-lancamento" onSubmit={saveItem}>
+        <div className="section-heading"><div><p className="eyebrow">{editing ? 'A EDITAR' : 'NOVO LANÇAMENTO'}</p><h2>{editing ? 'Atualize o lançamento' : 'Registre um movimento'}</h2></div><button type="button" className="text-button" onClick={() => { clearForm(); setShowEntryForm(false) }}>Fechar</button></div>
+        <div className="entry-grid">
+          <label>Data<input type="date" value={form.data} onChange={event => changeForm('data', event.target.value)} required /></label>
+          <label>Tipo<select value={form.tipo} onChange={event => changeForm('tipo', event.target.value)}><option>Gasto</option><option>Recebimento</option></select></label>
+          <label>Moeda<select value={form.moeda} onChange={event => changeForm('moeda', event.target.value)}><option value="EUR">Euro (€)</option><option value="BRL">Real brasileiro (R$)</option></select></label>
+          <label>Categoria<select value={form.categoria} onChange={event => changeForm('categoria', event.target.value)}>{categoryOptions.map(category => <option key={category}>{category}</option>)}</select></label>
+          {form.categoria === 'Outros' && <label className="span-all">Nova categoria<input value={form.categoriaOutro} onChange={event => changeForm('categoriaOutro', event.target.value)} placeholder="Ex.: Animais, presente, manutenção…" required /></label>}
+          <label>Valor ({form.moeda === 'EUR' ? '€' : 'R$'})<input inputMode="decimal" value={form.valor} onChange={event => changeForm('valor', event.target.value)} placeholder="0,00" required /></label>
+          <label className="span-all">Descrição<input value={form.descricao} onChange={event => changeForm('descricao', event.target.value)} placeholder="Ex.: Compras do supermercado" required /></label>
+        </div>
+        {form.moeda === 'EUR' && <p className="conversion-preview">{exchange.rate ? `Cotação de hoje: € 1 = ${formatMoney(exchange.rate)}. Este lançamento será exibido em real com a taxa atual.` : 'Buscando a cotação atual do euro…'}</p>}
+        {notice && <p className={'form-message ' + noticeKind}>{notice}</p>}
+        <button className="button primary" disabled={busy}>{busy ? 'A guardar…' : editing ? 'Guardar alterações' : 'Adicionar lançamento'}</button>
+        <ImportPanel fileName={importFileName} rows={importRows} issues={importIssues} busy={importBusy} accountName={activeAccount?.nome || 'minha conta pessoal'} onFileChange={readImportFile} onRemoveRow={removeImportedRow} onImport={saveImportedItems} />
+      </form>}
     </section>
 
     <section className="transactions-card" id="historico"><div className="section-heading"><div><p className="eyebrow">HISTÓRICO</p><h2>Lançamentos de {periodLabel}</h2></div><span className="count">{items.length} {items.length === 1 ? 'movimento' : 'movimentos'}</span></div>{items.length ? <div className="table-wrap"><table><thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Tipo</th><th>Valor informado</th><th>Em real hoje</th><th><span className="sr-only">Ações</span></th></tr></thead><tbody>{items.map(item => { const converted = toBrl(item, exchange.rate); return <tr key={item.id}><td>{dateFormatter.format(new Date(`${item.data}T12:00:00`))}</td><td><strong>{item.descricao}</strong></td><td>{item.categoria}</td><td><span className={'pill ' + (item.tipo === 'Recebimento' ? 'income' : 'expense')}>{item.tipo}</span></td><td className={item.tipo === 'Recebimento' ? 'positive' : 'negative'}>{item.tipo === 'Recebimento' ? '+' : '−'} {formatMoney(item.valor, item.moeda || 'BRL')}</td><td>{item.moeda === 'EUR' ? (converted === null ? 'Cotação indisponível' : formatMoney(converted)) : '—'}</td><td className="row-actions"><button onClick={() => editItem(item)}>Editar</button><button onClick={() => removeItem(item.id)} className="delete">Excluir</button></td></tr> })}</tbody></table></div> : <Empty text="Sem lançamentos para este mês. Use o formulário acima para adicionar o primeiro." />}</section>
@@ -584,10 +651,9 @@ function SummaryCard({ title, value, currency, icon, tone, caption }) {
 function Empty({ text }) { return <div className="empty">{text}</div> }
 
 function ImportPanel({ fileName, rows, issues, busy, accountName, onFileChange, onRemoveRow, onImport }) {
-  return <section className="import-panel">
-    <div className="import-heading"><div><p className="eyebrow">IMPORTAR LANÇAMENTOS</p><h3>Trazer um extrato para esta conta</h3><p>Escolha uma planilha e importe todas as linhas de uma vez para <strong>{accountName}</strong>.</p></div><label className="button secondary import-file-button">{busy ? 'Lendo arquivo…' : 'Escolher arquivo'}<input type="file" accept=".xlsx,.xls,.csv" onChange={onFileChange} disabled={busy} /></label></div>
-    <p className="import-help">Colunas reconhecidas: <strong>Data, Descrição e Valor</strong>. Também pode incluir Tipo, Categoria e Moeda. Valores negativos são gastos; para entradas, inclua a coluna Tipo com “Recebimento”.</p>
-    {fileName && <div className="import-result"><div className="import-result-heading"><span><strong>{fileName}</strong> · {rows.length} linhas prontas</span><span>{issues.length ? `${issues.length} aviso(s)` : 'Pronto para importar'}</span></div>{rows.length > 0 && <div className="import-table-wrap"><table className="import-table"><thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Tipo</th><th>Valor</th><th /></tr></thead><tbody>{rows.slice(0, 8).map((row, index) => <tr key={`${row.data}-${row.descricao}-${index}`}><td>{dateFormatter.format(new Date(`${row.data}T12:00:00`))}</td><td>{row.descricao}</td><td>{row.categoria}</td><td>{row.tipo}</td><td>{formatMoney(row.valor, row.moeda)}</td><td><button type="button" onClick={() => onRemoveRow(index)}>Remover</button></td></tr>)}</tbody></table></div>}{rows.length > 8 && <p className="import-more">A mostrar 8 de {rows.length} lançamentos. Todos serão importados.</p>}{issues.length > 0 && <details className="import-issues"><summary>Ver linhas que não serão importadas</summary><ul>{issues.slice(0, 10).map(issue => <li key={issue}>{issue}</li>)}</ul></details>}{rows.length > 0 && <button type="button" className="button primary import-confirm" onClick={onImport} disabled={busy}>{busy ? 'Importando…' : `Importar ${rows.length} lançamentos`}</button>}</div>}
+  return <section className={'import-panel ' + (fileName ? 'with-file' : '')}>
+    <div className="import-heading"><div><p className="eyebrow">IMPORTAR EXTRATO</p><h3>Importar ficheiro</h3><p>Excel ou CSV para <strong>{accountName}</strong>.</p></div><label className="button secondary import-file-button">{busy ? 'Lendo…' : 'Escolher arquivo'}<input type="file" accept=".xlsx,.xls,.csv" onChange={onFileChange} disabled={busy} /></label></div>
+    {fileName && <><p className="import-help">Confere os dados antes de gravar. São aceites as colunas Data, Descrição e Valor; Tipo, Categoria e Moeda são opcionais.</p><div className="import-result"><div className="import-result-heading"><span><strong>{fileName}</strong> · {rows.length} linhas prontas</span><span>{issues.length ? `${issues.length} aviso(s)` : 'Pronto para importar'}</span></div>{rows.length > 0 && <div className="import-table-wrap"><table className="import-table"><thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Tipo</th><th>Valor</th><th /></tr></thead><tbody>{rows.slice(0, 8).map((row, index) => <tr key={`${row.data}-${row.descricao}-${index}`}><td>{dateFormatter.format(new Date(`${row.data}T12:00:00`))}</td><td>{row.descricao}</td><td>{row.categoria}</td><td>{row.tipo}</td><td>{formatMoney(row.valor, row.moeda)}</td><td><button type="button" onClick={() => onRemoveRow(index)}>Remover</button></td></tr>)}</tbody></table></div>}{rows.length > 8 && <p className="import-more">A mostrar 8 de {rows.length} lançamentos. Todos serão importados.</p>}{issues.length > 0 && <details className="import-issues"><summary>Ver linhas que não serão importadas</summary><ul>{issues.slice(0, 10).map(issue => <li key={issue}>{issue}</li>)}</ul></details>}{rows.length > 0 && <button type="button" className="button primary import-confirm" onClick={onImport} disabled={busy}>{busy ? 'Importando…' : `Importar ${rows.length} lançamentos`}</button>}</div></>}
   </section>
 }
 
