@@ -3,6 +3,7 @@ import { isSupabaseConfigured, supabase } from './supabase'
 
 const CATEGORIAS = ['Salário', 'Renda extra', 'Moradia', 'Alimentação', 'Transporte', 'Saúde', 'Educação', 'Lazer', 'Vestuário', 'Dívidas', 'Imposto', 'Investimentos', 'Outros']
 const MAX_VALUE = 9_999_999_999.99
+const MAX_IMPORT_ROWS = 500
 const brl = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' })
 const eur = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'EUR' })
 const monthFormatter = new Intl.DateTimeFormat('pt-BR', { month: 'long', year: 'numeric' })
@@ -34,6 +35,76 @@ function makeInviteCode() {
   crypto.getRandomValues(values)
   const code = Array.from(values, value => chars[value % chars.length]).join('')
   return `${code.slice(0, 4)}-${code.slice(4)}`
+}
+
+function normalizeImportText(value) {
+  return String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase()
+}
+
+function importValue(row, names) {
+  return names.map(name => row[name]).find(value => value !== undefined && value !== null && String(value).trim() !== '')
+}
+
+function importDate(value) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0, 10)
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const excelDate = new Date(Date.UTC(1899, 11, 30) + Math.floor(value) * 86_400_000)
+    if (!Number.isNaN(excelDate.getTime())) return excelDate.toISOString().slice(0, 10)
+  }
+  const text = String(value ?? '').trim()
+  const iso = text.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/)
+  if (iso) return `${iso[1]}-${String(iso[2]).padStart(2, '0')}-${String(iso[3]).padStart(2, '0')}`
+  const local = text.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})/)
+  if (local) {
+    const year = local[3].length === 2 ? `20${local[3]}` : local[3]
+    return `${year}-${String(local[2]).padStart(2, '0')}-${String(local[1]).padStart(2, '0')}`
+  }
+  return ''
+}
+
+function importAmount(value) {
+  let text = String(value ?? '').trim()
+  if (!text) return null
+  const negative = text.includes('-') || /^\(.*\)$/.test(text)
+  text = text.replace(/[^\d,.-]/g, '')
+  const lastComma = text.lastIndexOf(',')
+  const lastDot = text.lastIndexOf('.')
+  if (lastComma > -1 && lastDot > -1) text = lastComma > lastDot ? text.replace(/\./g, '').replace(',', '.') : text.replace(/,/g, '')
+  else if (lastComma > -1) text = text.replace(',', '.')
+  const amount = Number(text)
+  if (!Number.isFinite(amount)) return null
+  return negative ? -Math.abs(amount) : amount
+}
+
+function parseImportedRows(records) {
+  const rows = []
+  const issues = []
+  records.slice(0, MAX_IMPORT_ROWS).forEach((source, index) => {
+    const row = Object.fromEntries(Object.entries(source).map(([key, value]) => [normalizeImportText(key), value]))
+    const date = importDate(importValue(row, ['data', 'date', 'data do lancamento', 'data lancamento']))
+    const directValue = importValue(row, ['valor', 'value', 'amount', 'quantia', 'montante'])
+    const debitValue = importValue(row, ['debito', 'despesa', 'saida', 'saidas'])
+    const creditValue = importValue(row, ['credito', 'receita', 'entrada', 'entradas'])
+    const rawValue = directValue ?? debitValue ?? creditValue
+    const amount = importAmount(rawValue)
+    if (!date || amount === null || amount === 0 || Math.abs(amount) > MAX_VALUE) {
+      issues.push(`Linha ${index + 2}: data ou valor inválido.`)
+      return
+    }
+    const rawType = normalizeImportText(importValue(row, ['tipo', 'type', 'natureza']))
+    const tipo = amount < 0 || /gasto|despesa|debito|saida/.test(rawType)
+      ? 'Gasto'
+      : /recebimento|receita|entrada|credito|income/.test(rawType) || (directValue === undefined && creditValue !== undefined)
+        ? 'Recebimento'
+        : 'Gasto'
+    const importedCategory = String(importValue(row, ['categoria', 'category', 'grupo']) ?? '').trim()
+    const categoria = CATEGORIAS.find(category => normalizeImportText(category) === normalizeImportText(importedCategory)) || importedCategory || 'Outros'
+    const descricao = String(importValue(row, ['descricao', 'description', 'historico', 'memo', 'nome', 'lancamento']) ?? (importedCategory || 'Lançamento importado')).trim()
+    const currency = normalizeImportText(importValue(row, ['moeda', 'currency', 'divisa']))
+    rows.push({ data: date, tipo, categoria, descricao, valor: Math.abs(amount), moeda: /eur|euro|€/.test(currency) ? 'EUR' : 'BRL' })
+  })
+  if (records.length > MAX_IMPORT_ROWS) issues.push(`Foram consideradas apenas as primeiras ${MAX_IMPORT_ROWS} linhas do arquivo.`)
+  return { rows, issues }
 }
 
 function AuthScreen({ onSession }) {
@@ -114,6 +185,11 @@ function Dashboard({ session }) {
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
   const [noticeKind, setNoticeKind] = useState('error')
+  const [importRows, setImportRows] = useState([])
+  const [importIssues, setImportIssues] = useState([])
+  const [importFileName, setImportFileName] = useState('')
+  const [importBusy, setImportBusy] = useState(false)
+  const [importAccountId, setImportAccountId] = useState('personal')
   const [goals, setGoals] = useState([])
   const [showGoalForm, setShowGoalForm] = useState(false)
   const [goalForm, setGoalForm] = useState({ titulo: '', valor_meta: '', valor_atual: '0', moeda: 'EUR', prazo: '' })
@@ -263,6 +339,74 @@ function Dashboard({ session }) {
     document.getElementById('historico')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
 
+  async function readImportFile(event) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    const extension = file.name.split('.').pop()?.toLowerCase()
+    if (!['xlsx', 'xls', 'csv'].includes(extension)) {
+      setNoticeKind('error')
+      return setNotice('Escolha um arquivo .xlsx, .xls ou .csv.')
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setNoticeKind('error')
+      return setNotice('O arquivo deve ter no máximo 10 MB.')
+    }
+    setImportBusy(true)
+    setImportRows([])
+    setImportIssues([])
+    try {
+      const XLSX = await import('xlsx')
+      const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: true })
+      const firstSheet = workbook.Sheets[workbook.SheetNames[0]]
+      const records = XLSX.utils.sheet_to_json(firstSheet, { defval: '', raw: false })
+      if (!records.length) throw new Error('Não encontrei linhas para importar na primeira folha do arquivo.')
+      const parsed = parseImportedRows(records)
+      setImportRows(parsed.rows)
+      setImportIssues(parsed.issues)
+      setImportFileName(file.name)
+      setImportAccountId(activeAccountId)
+      if (!parsed.rows.length) {
+        setNoticeKind('error')
+        setNotice('Nenhuma linha válida foi encontrada. Confira os nomes das colunas e os valores do arquivo.')
+      }
+    } catch (error) {
+      setNoticeKind('error')
+      setNotice(`Não foi possível ler o arquivo: ${error.message || 'arquivo inválido.'}`)
+    } finally {
+      setImportBusy(false)
+    }
+  }
+
+  function removeImportedRow(index) {
+    setImportRows(current => current.filter((_, rowIndex) => rowIndex !== index))
+  }
+
+  async function saveImportedItems() {
+    if (!importRows.length) return
+    setImportBusy(true)
+    setNotice('')
+    const payload = importRows.map(row => ({ ...row, user_id: session.user.id, conta_id: importAccountId === 'personal' ? null : importAccountId }))
+    try {
+      for (let start = 0; start < payload.length; start += 100) {
+        const { error } = await supabase.from('lancamentos').insert(payload.slice(start, start + 100))
+        if (error) throw error
+      }
+      setImportRows([])
+      setImportIssues([])
+      setImportFileName('')
+      setNoticeKind('success')
+      setNotice(`${payload.length} lançamentos foram importados com sucesso.`)
+      await refreshFinancialData()
+      document.getElementById('historico')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    } catch (error) {
+      setNoticeKind('error')
+      setNotice('Não foi possível importar os lançamentos: ' + (error.message || 'erro desconhecido.'))
+    } finally {
+      setImportBusy(false)
+    }
+  }
+
   async function removeItem(id) {
     if (!window.confirm('Excluir este lançamento?')) return
     const { error } = await supabase.from('lancamentos').delete().eq('id', id)
@@ -397,14 +541,17 @@ function Dashboard({ session }) {
     {hasExchangeWarning && <p className="exchange-warning">A cotação em euro está indisponível no momento. Valores em euro não entram nos totais até a atualização ser concluída.</p>}
     <section className="summary-grid summary-grid-four"><SummaryCard title="Saldo do mês" value={displayValue(balance)} currency={displayCurrency} icon="◎" tone={balance >= 0 ? 'balance' : 'expense'} caption={`Convertido para ${currencyName}`} /><SummaryCard title="Entradas" value={displayValue(totals.income)} currency={displayCurrency} icon="↗" tone="income" caption={`Convertido para ${currencyName}`} /><SummaryCard title="Despesas" value={displayValue(totals.expenses)} currency={displayCurrency} icon="↘" tone="expense" caption={`Convertido para ${currencyName}`} /><SummaryCard title={`Gastos em ${year}`} value={displayValue(annual.total)} currency={displayCurrency} icon="◷" tone="annual" caption={`Ano completo em ${currencyName}`} /><button type="button" className="add-entry-card" onClick={openEntryForm}><span>+</span><strong>Novo lançamento</strong><small>Registre entradas ou despesas</small></button></section>
 
-    <section className={`content-grid ${showEntryForm ? 'form-open' : 'form-closed'}`}>{showEntryForm && <form className="entry-card" id="novo-lancamento" onSubmit={saveItem}><div className="section-heading"><div><p className="eyebrow">{editing ? 'A EDITAR' : 'NOVO LANÇAMENTO'}</p><h2>{editing ? 'Atualize o lançamento' : 'Registre um movimento'}</h2></div><button type="button" className="text-button" onClick={() => { clearForm(); setShowEntryForm(false) }}>Fechar</button></div><div className="entry-grid"><label>Data<input type="date" value={form.data} onChange={event => changeForm('data', event.target.value)} required /></label><label>Tipo<select value={form.tipo} onChange={event => changeForm('tipo', event.target.value)}><option>Gasto</option><option>Recebimento</option></select></label><label>Moeda<select value={form.moeda} onChange={event => changeForm('moeda', event.target.value)}><option value="BRL">Real brasileiro (R$)</option><option value="EUR">Euro (€)</option></select></label><label>Categoria<select value={form.categoria} onChange={event => changeForm('categoria', event.target.value)}>{CATEGORIAS.map(category => <option key={category}>{category}</option>)}</select></label>{form.categoria === 'Outros' && <label className="span-all">Qual categoria?<input value={form.categoriaOutro} onChange={event => changeForm('categoriaOutro', event.target.value)} placeholder="Ex.: Animais, presente, manutenção…" required /></label>}<label>Valor ({form.moeda === 'EUR' ? '€' : 'R$'})<input inputMode="decimal" value={form.valor} onChange={event => changeForm('valor', event.target.value)} placeholder="0,00" required /></label><label className="span-all">Descrição<input value={form.descricao} onChange={event => changeForm('descricao', event.target.value)} placeholder="Ex.: Compras do supermercado" required /></label></div>{form.moeda === 'EUR' && <p className="conversion-preview">{exchange.rate ? `Cotação de hoje: € 1 = ${formatMoney(exchange.rate)}. Este lançamento será exibido em real com a taxa atual.` : 'Buscando a cotação atual do euro…'}</p>}{notice && <p className={'form-message ' + noticeKind}>{notice}</p>}<button className="button primary" disabled={busy}>{busy ? 'A guardar…' : editing ? 'Guardar alterações' : 'Adicionar lançamento'}</button></form>}
-      <section className="category-card"><div className="section-heading"><div><p className="eyebrow">ANÁLISE DO MÊS</p><h2>Gastos por categoria</h2></div><button type="button" className="text-button">Ver todas</button></div>{expenseCategories.length ? <div className="category-visual"><CategoryDonut items={expenseCategories} total={totals.expenses} displayValue={displayValue} currency={displayCurrency} /><div className="category-list">{expenseCategories.slice(0, 6).map((item, index) => <div className="category-row" key={item.name}><span><i className={`category-color color-${index % 6}`} />{item.name}</span><strong>{displayValue(item.value) === null ? '—' : formatMoney(displayValue(item.value), displayCurrency)}</strong></div>)}</div></div> : <Empty text="Ainda não existem gastos neste mês." />}</section></section>
+    <section className={`content-grid ${showEntryForm ? 'form-open' : 'form-closed'}`}>{showEntryForm && <form className="entry-card" id="novo-lancamento" onSubmit={saveItem}><div className="section-heading"><div><p className="eyebrow">{editing ? 'A EDITAR' : 'NOVO LANÇAMENTO'}</p><h2>{editing ? 'Atualize o lançamento' : 'Registre um movimento'}</h2></div><button type="button" className="text-button" onClick={() => { clearForm(); setShowEntryForm(false) }}>Fechar</button></div><div className="entry-grid"><label>Data<input type="date" value={form.data} onChange={event => changeForm('data', event.target.value)} required /></label><label>Tipo<select value={form.tipo} onChange={event => changeForm('tipo', event.target.value)}><option>Gasto</option><option>Recebimento</option></select></label><label>Moeda<select value={form.moeda} onChange={event => changeForm('moeda', event.target.value)}><option value="BRL">Real brasileiro (R$)</option><option value="EUR">Euro (€)</option></select></label><label>Categoria<select value={form.categoria} onChange={event => changeForm('categoria', event.target.value)}>{CATEGORIAS.map(category => <option key={category}>{category}</option>)}</select></label>{form.categoria === 'Outros' && <label className="span-all">Qual categoria?<input value={form.categoriaOutro} onChange={event => changeForm('categoriaOutro', event.target.value)} placeholder="Ex.: Animais, presente, manutenção…" required /></label>}<label>Valor ({form.moeda === 'EUR' ? '€' : 'R$'})<input inputMode="decimal" value={form.valor} onChange={event => changeForm('valor', event.target.value)} placeholder="0,00" required /></label><label className="span-all">Descrição<input value={form.descricao} onChange={event => changeForm('descricao', event.target.value)} placeholder="Ex.: Compras do supermercado" required /></label></div>{form.moeda === 'EUR' && <p className="conversion-preview">{exchange.rate ? `Cotação de hoje: € 1 = ${formatMoney(exchange.rate)}. Este lançamento será exibido em real com a taxa atual.` : 'Buscando a cotação atual do euro…'}</p>}{notice && <p className={'form-message ' + noticeKind}>{notice}</p>}<button className="button primary" disabled={busy}>{busy ? 'A guardar…' : editing ? 'Guardar alterações' : 'Adicionar lançamento'}</button><ImportPanel fileName={importFileName} rows={importRows} issues={importIssues} busy={importBusy} accountName={activeAccount?.nome || 'minha conta pessoal'} onFileChange={readImportFile} onRemoveRow={removeImportedRow} onImport={saveImportedItems} /></form>}
+    </section>
+
+    <section className="transactions-card" id="historico"><div className="section-heading"><div><p className="eyebrow">HISTÓRICO</p><h2>Lançamentos de {periodLabel}</h2></div><span className="count">{items.length} {items.length === 1 ? 'movimento' : 'movimentos'}</span></div>{items.length ? <div className="table-wrap"><table><thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Tipo</th><th>Valor informado</th><th>Em real hoje</th><th><span className="sr-only">Ações</span></th></tr></thead><tbody>{items.map(item => { const converted = toBrl(item, exchange.rate); return <tr key={item.id}><td>{dateFormatter.format(new Date(`${item.data}T12:00:00`))}</td><td><strong>{item.descricao}</strong></td><td>{item.categoria}</td><td><span className={'pill ' + (item.tipo === 'Recebimento' ? 'income' : 'expense')}>{item.tipo}</span></td><td className={item.tipo === 'Recebimento' ? 'positive' : 'negative'}>{item.tipo === 'Recebimento' ? '+' : '−'} {formatMoney(item.valor, item.moeda || 'BRL')}</td><td>{item.moeda === 'EUR' ? (converted === null ? 'Cotação indisponível' : formatMoney(converted)) : '—'}</td><td className="row-actions"><button onClick={() => editItem(item)}>Editar</button><button onClick={() => removeItem(item.id)} className="delete">Excluir</button></td></tr> })}</tbody></table></div> : <Empty text="Sem lançamentos para este mês. Use o formulário acima para adicionar o primeiro." />}</section>
+
+    <section className="category-card"><div className="section-heading"><div><p className="eyebrow">ANÁLISE DO MÊS</p><h2>Gastos por categoria</h2></div><button type="button" className="text-button">Ver todas</button></div>{expenseCategories.length ? <div className="category-visual"><CategoryDonut items={expenseCategories} total={totals.expenses} displayValue={displayValue} currency={displayCurrency} /><div className="category-list">{expenseCategories.slice(0, 6).map((item, index) => <div className="category-row" key={item.name}><span><i className={`category-color color-${index % 6}`} />{item.name}</span><strong>{displayValue(item.value) === null ? '—' : formatMoney(displayValue(item.value), displayCurrency)}</strong></div>)}</div></div> : <Empty text="Ainda não existem gastos neste mês." />}</section>
 
     <section className="goals-card" id="metas"><div className="section-heading"><div><p className="eyebrow">PLANEJAMENTO</p><h2>Metas financeiras</h2><p className="section-subtitle">Acompanhe objetivos pessoais ou compartilhados.</p></div><button type="button" className="button secondary goal-add" onClick={() => setShowGoalForm(current => !current)}>{showGoalForm ? 'Fechar' : 'Nova meta'}</button></div>{showGoalForm && <form className="goal-form" onSubmit={saveGoal}><input value={goalForm.titulo} onChange={event => setGoalForm(current => ({ ...current, titulo: event.target.value }))} placeholder="Ex.: Reserva de emergência" required /><input inputMode="decimal" value={goalForm.valor_meta} onChange={event => setGoalForm(current => ({ ...current, valor_meta: event.target.value }))} placeholder="Valor da meta" required /><input inputMode="decimal" value={goalForm.valor_atual} onChange={event => setGoalForm(current => ({ ...current, valor_atual: event.target.value }))} placeholder="Valor atual" required /><select value={goalForm.moeda} onChange={event => setGoalForm(current => ({ ...current, moeda: event.target.value }))}><option value="EUR">Euro (€)</option><option value="BRL">Real (R$)</option></select><input type="date" value={goalForm.prazo} onChange={event => setGoalForm(current => ({ ...current, prazo: event.target.value }))} /><button className="button primary">Salvar meta</button></form>}{goals.length ? <div className="goals-grid">{goals.map(goal => { const progress = Math.min(100, (Number(goal.valor_atual) / Number(goal.valor_meta)) * 100 || 0); return <article className="goal-item" key={goal.id}><div className="goal-title"><div><h3>{goal.titulo}</h3><p>{goal.prazo ? `Prazo: ${dateFormatter.format(new Date(`${goal.prazo}T12:00:00`))}` : 'Sem prazo definido'}</p></div><button type="button" className="text-button" onClick={() => removeGoal(goal.id)}>Excluir</button></div><div className="goal-values"><strong>{formatMoney(goal.valor_atual, goal.moeda)}</strong><span>de {formatMoney(goal.valor_meta, goal.moeda)}</span></div><div className="goal-track"><span style={{ width: `${progress}%` }} /></div><div className="goal-footer"><small>{progress.toFixed(0)}% concluído</small><button type="button" className="text-button" onClick={() => updateGoalProgress(goal)}>Atualizar progresso</button></div></article> })}</div> : <Empty text="Você ainda não criou uma meta. Comece com um objetivo simples." />}</section>
 
     <section className="annual-card" id="relatorios"><div className="section-heading"><div><p className="eyebrow">RELATÓRIOS · VISÃO ANUAL</p><h2>Gastos de {year}</h2><p className="section-subtitle">Todos os gastos, agrupados por mês e convertidos para {currencyName} na cotação atual.</p></div><strong className="annual-total">{displayValue(annual.total) === null ? '—' : formatMoney(displayValue(annual.total), displayCurrency)}</strong></div><div className="annual-chart">{annual.byMonth.map(item => <div className="month-column" key={item.month}><span className="bar-value">{item.total ? (displayValue(item.total) === null ? '—' : formatMoney(displayValue(item.total), displayCurrency)) : ''}</span><div className="bar-track"><div className="bar-fill" style={{ height: `${(item.total / annualMax) * 100}%` }} /></div><span>{shortMonthFormatter.format(new Date(year, item.month, 1)).replace('.', '')}</span></div>)}</div></section>
 
-    <section className="transactions-card" id="historico"><div className="section-heading"><div><p className="eyebrow">HISTÓRICO</p><h2>Lançamentos de {periodLabel}</h2></div><span className="count">{items.length} {items.length === 1 ? 'movimento' : 'movimentos'}</span></div>{items.length ? <div className="table-wrap"><table><thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Tipo</th><th>Valor informado</th><th>Em real hoje</th><th><span className="sr-only">Ações</span></th></tr></thead><tbody>{items.map(item => { const converted = toBrl(item, exchange.rate); return <tr key={item.id}><td>{dateFormatter.format(new Date(`${item.data}T12:00:00`))}</td><td><strong>{item.descricao}</strong></td><td>{item.categoria}</td><td><span className={'pill ' + (item.tipo === 'Recebimento' ? 'income' : 'expense')}>{item.tipo}</span></td><td className={item.tipo === 'Recebimento' ? 'positive' : 'negative'}>{item.tipo === 'Recebimento' ? '+' : '−'} {formatMoney(item.valor, item.moeda || 'BRL')}</td><td>{item.moeda === 'EUR' ? (converted === null ? 'Cotação indisponível' : formatMoney(converted)) : '—'}</td><td className="row-actions"><button onClick={() => editItem(item)}>Editar</button><button onClick={() => removeItem(item.id)} className="delete">Excluir</button></td></tr> })}</tbody></table></div> : <Empty text="Sem lançamentos para este mês. Use o formulário acima para adicionar o primeiro." />}</section>
   </main>
 }
 
@@ -435,5 +582,13 @@ function SummaryCard({ title, value, currency, icon, tone, caption }) {
 }
 
 function Empty({ text }) { return <div className="empty">{text}</div> }
+
+function ImportPanel({ fileName, rows, issues, busy, accountName, onFileChange, onRemoveRow, onImport }) {
+  return <section className="import-panel">
+    <div className="import-heading"><div><p className="eyebrow">IMPORTAR LANÇAMENTOS</p><h3>Trazer um extrato para esta conta</h3><p>Escolha uma planilha e importe todas as linhas de uma vez para <strong>{accountName}</strong>.</p></div><label className="button secondary import-file-button">{busy ? 'Lendo arquivo…' : 'Escolher arquivo'}<input type="file" accept=".xlsx,.xls,.csv" onChange={onFileChange} disabled={busy} /></label></div>
+    <p className="import-help">Colunas reconhecidas: <strong>Data, Descrição e Valor</strong>. Também pode incluir Tipo, Categoria e Moeda. Valores negativos são gastos; para entradas, inclua a coluna Tipo com “Recebimento”.</p>
+    {fileName && <div className="import-result"><div className="import-result-heading"><span><strong>{fileName}</strong> · {rows.length} linhas prontas</span><span>{issues.length ? `${issues.length} aviso(s)` : 'Pronto para importar'}</span></div>{rows.length > 0 && <div className="import-table-wrap"><table className="import-table"><thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Tipo</th><th>Valor</th><th /></tr></thead><tbody>{rows.slice(0, 8).map((row, index) => <tr key={`${row.data}-${row.descricao}-${index}`}><td>{dateFormatter.format(new Date(`${row.data}T12:00:00`))}</td><td>{row.descricao}</td><td>{row.categoria}</td><td>{row.tipo}</td><td>{formatMoney(row.valor, row.moeda)}</td><td><button type="button" onClick={() => onRemoveRow(index)}>Remover</button></td></tr>)}</tbody></table></div>}{rows.length > 8 && <p className="import-more">A mostrar 8 de {rows.length} lançamentos. Todos serão importados.</p>}{issues.length > 0 && <details className="import-issues"><summary>Ver linhas que não serão importadas</summary><ul>{issues.slice(0, 10).map(issue => <li key={issue}>{issue}</li>)}</ul></details>}{rows.length > 0 && <button type="button" className="button primary import-confirm" onClick={onImport} disabled={busy}>{busy ? 'Importando…' : `Importar ${rows.length} lançamentos`}</button>}</div>}
+  </section>
+}
 
 export default App

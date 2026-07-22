@@ -20,3 +20,7 @@ O sistema consulta a cotação de referência EUR/BRL diretamente na API públic
 ## Contas conjuntas
 
 Cada integrante cria sua própria conta com e-mail e senha. Quem criar uma conta conjunta recebe um código de convite; a outra pessoa usa esse código na área **Contas conjuntas**. Lançamentos da conta conjunta podem ser visualizados e alterados por todos os membros, e o painel de auditoria registra quem criou, editou ou excluiu cada lançamento.
+
+## Importar extratos
+
+No formulário de novo lançamento, use **Escolher arquivo** para importar arquivos `.xlsx`, `.xls` ou `.csv`. O sistema lê a primeira folha e grava todos os lançamentos válidos na conta selecionada após uma única confirmação. As colunas obrigatórias são `Data`, `Descrição` e `Valor`; `Tipo`, `Categoria` e `Moeda` são opcionais. Valores negativos são tratados como gastos. Para uma entrada, use `Recebimento` na coluna `Tipo`.
