@@ -4,6 +4,15 @@ import { isSupabaseConfigured, supabase } from './supabase'
 const CATEGORIAS = ['Salário', 'Renda extra', 'Moradia', 'Alimentação', 'Transporte', 'Saúde', 'Educação', 'Lazer', 'Vestuário', 'Dívidas', 'Imposto', 'Investimentos', 'Outros']
 const MAX_VALUE = 9_999_999_999.99
 const MAX_IMPORT_ROWS = 500
+const IMPORT_COLUMNS = {
+  data: ['data', 'date', 'data do lancamento', 'data lancamento', 'data movimento', 'data operacao', 'transaction date', 'booking date'],
+  descricao: ['descricao', 'description', 'historico', 'memo', 'nome', 'lancamento', 'detalhe', 'details'],
+  valor: ['valor', 'value', 'amount', 'quantia', 'montante', 'valor movimento'],
+  tipo: ['tipo', 'type', 'natureza', 'movimento'],
+  categoria: ['categoria', 'category', 'grupo', 'subcategoria'],
+  moeda: ['moeda', 'currency', 'divisa'],
+}
+const EMPTY_IMPORT_MAPPING = { data: '', descricao: '', valor: '', tipo: '', categoria: '', moeda: '' }
 const brl = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' })
 const eur = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'EUR' })
 const monthFormatter = new Intl.DateTimeFormat('pt-BR', { month: 'long', year: 'numeric' })
@@ -46,6 +55,13 @@ function importValue(row, names) {
   return key === undefined ? undefined : row[key]
 }
 
+function guessImportMapping(headers) {
+  return Object.fromEntries(Object.entries(IMPORT_COLUMNS).map(([field, names]) => [field, headers.find(header => {
+    const column = normalizeImportText(header)
+    return names.some(name => column === name || column.startsWith(`${name} `) || column.startsWith(`${name}(`))
+  }) || '']))
+}
+
 function importDate(value) {
   if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0, 10)
   if (typeof value === 'number' && Number.isFinite(value)) {
@@ -77,13 +93,14 @@ function importAmount(value) {
   return negative ? -Math.abs(amount) : amount
 }
 
-function parseImportedRows(records) {
+function parseImportedRows(records, mapping = EMPTY_IMPORT_MAPPING) {
   const rows = []
   const issues = []
   records.slice(0, MAX_IMPORT_ROWS).forEach((source, index) => {
     const row = Object.fromEntries(Object.entries(source).map(([key, value]) => [normalizeImportText(key), value]))
-    const date = importDate(importValue(row, ['data', 'date', 'data do lancamento', 'data lancamento', 'data movimento', 'data operacao', 'transaction date', 'booking date']))
-    const directValue = importValue(row, ['valor', 'value', 'amount', 'quantia', 'montante', 'valor movimento'])
+    const mappedValue = (field, names) => mapping[field] ? source[mapping[field]] : importValue(row, names)
+    const date = importDate(mappedValue('data', IMPORT_COLUMNS.data))
+    const directValue = mappedValue('valor', IMPORT_COLUMNS.valor)
     const debitValue = importValue(row, ['debito', 'despesa', 'saida', 'saidas'])
     const creditValue = importValue(row, ['credito', 'receita', 'entrada', 'entradas'])
     const rawValue = directValue ?? debitValue ?? creditValue
@@ -92,16 +109,16 @@ function parseImportedRows(records) {
       issues.push(`Linha ${index + 2}: data ou valor inválido.`)
       return
     }
-    const rawType = normalizeImportText(importValue(row, ['tipo', 'type', 'natureza', 'movimento']))
+    const rawType = normalizeImportText(mappedValue('tipo', IMPORT_COLUMNS.tipo))
     const tipo = amount < 0 || /gasto|despesa|debito|saida/.test(rawType)
       ? 'Gasto'
       : /recebimento|receita|entrada|credito|income/.test(rawType) || (directValue === undefined && creditValue !== undefined)
         ? 'Recebimento'
         : 'Gasto'
-    const importedCategory = String(importValue(row, ['categoria', 'category', 'grupo', 'subcategoria']) ?? '').trim()
+    const importedCategory = String(mappedValue('categoria', IMPORT_COLUMNS.categoria) ?? '').trim()
     const categoria = CATEGORIAS.find(category => normalizeImportText(category) === normalizeImportText(importedCategory)) || importedCategory || 'Outros'
-    const descricao = String(importValue(row, ['descricao', 'description', 'historico', 'memo', 'nome', 'lancamento', 'detalhe', 'details']) ?? (importedCategory || 'Lançamento importado')).trim()
-    const currency = normalizeImportText(importValue(row, ['moeda', 'currency', 'divisa']))
+    const descricao = String(mappedValue('descricao', IMPORT_COLUMNS.descricao) ?? (importedCategory || 'Lançamento importado')).trim()
+    const currency = normalizeImportText(mappedValue('moeda', IMPORT_COLUMNS.moeda))
     rows.push({ data: date, tipo, categoria, descricao, valor: Math.abs(amount), moeda: /eur|euro|€/.test(currency) ? 'EUR' : 'BRL' })
   })
   if (records.length > MAX_IMPORT_ROWS) issues.push(`Foram consideradas apenas as primeiras ${MAX_IMPORT_ROWS} linhas do arquivo.`)
@@ -190,6 +207,9 @@ function Dashboard({ session }) {
   const [importRows, setImportRows] = useState([])
   const [importIssues, setImportIssues] = useState([])
   const [importFileName, setImportFileName] = useState('')
+  const [importRecords, setImportRecords] = useState([])
+  const [importHeaders, setImportHeaders] = useState([])
+  const [importMapping, setImportMapping] = useState(EMPTY_IMPORT_MAPPING)
   const [importBusy, setImportBusy] = useState(false)
   const [importAccountId, setImportAccountId] = useState('personal')
   const [goals, setGoals] = useState([])
@@ -393,16 +413,24 @@ function Dashboard({ session }) {
     setImportBusy(true)
     setImportRows([])
     setImportIssues([])
+    setImportRecords([])
+    setImportHeaders([])
+    setImportMapping(EMPTY_IMPORT_MAPPING)
     try {
       const XLSX = await import('xlsx')
       const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: true })
       const firstSheet = workbook.Sheets[workbook.SheetNames[0]]
       const records = XLSX.utils.sheet_to_json(firstSheet, { defval: '', raw: false })
       if (!records.length) throw new Error('Não encontrei linhas para importar na primeira folha do arquivo.')
-      const parsed = parseImportedRows(records)
+      const headers = Object.keys(records[0])
+      const mapping = guessImportMapping(headers)
+      const parsed = parseImportedRows(records, mapping)
       setImportRows(parsed.rows)
       setImportIssues(parsed.issues)
       setImportFileName(file.name)
+      setImportRecords(records)
+      setImportHeaders(headers)
+      setImportMapping(mapping)
       setImportAccountId(activeAccountId)
       if (!parsed.rows.length) {
         setNoticeKind('error')
@@ -418,6 +446,14 @@ function Dashboard({ session }) {
 
   function removeImportedRow(index) {
     setImportRows(current => current.filter((_, rowIndex) => rowIndex !== index))
+  }
+
+  function changeImportMapping(field, header) {
+    const nextMapping = { ...importMapping, [field]: header }
+    const parsed = parseImportedRows(importRecords, nextMapping)
+    setImportMapping(nextMapping)
+    setImportRows(parsed.rows)
+    setImportIssues(parsed.issues)
   }
 
   async function saveImportedItems() {
@@ -445,6 +481,9 @@ function Dashboard({ session }) {
       setImportRows([])
       setImportIssues([])
       setImportFileName('')
+      setImportRecords([])
+      setImportHeaders([])
+      setImportMapping(EMPTY_IMPORT_MAPPING)
       setNoticeKind('success')
       setNotice(`${payload.length} lançamentos foram importados com sucesso.`)
       await Promise.all([refreshFinancialData(), ...[...new Set(importRows.map(row => row.categoria))].map(category => saveCustomCategory(category, importAccountId))])
@@ -607,7 +646,7 @@ function Dashboard({ session }) {
         {form.moeda === 'EUR' && <p className="conversion-preview">{exchange.rate ? `Cotação de hoje: € 1 = ${formatMoney(exchange.rate)}. Este lançamento será exibido em real com a taxa atual.` : 'Buscando a cotação atual do euro…'}</p>}
         {notice && <p className={'form-message ' + noticeKind}>{notice}</p>}
         <button className="button primary" disabled={busy}>{busy ? 'A guardar…' : editing ? 'Guardar alterações' : 'Adicionar lançamento'}</button>
-        <ImportPanel fileName={importFileName} rows={importRows} issues={importIssues} busy={importBusy} accountName={activeAccount?.nome || 'minha conta pessoal'} onFileChange={readImportFile} onRemoveRow={removeImportedRow} onImport={saveImportedItems} />
+        <ImportPanel fileName={importFileName} rows={importRows} issues={importIssues} headers={importHeaders} mapping={importMapping} busy={importBusy} accountName={activeAccount?.nome || 'minha conta pessoal'} onFileChange={readImportFile} onMappingChange={changeImportMapping} onRemoveRow={removeImportedRow} onImport={saveImportedItems} />
       </form>}
     </section>
 
@@ -650,11 +689,17 @@ function SummaryCard({ title, value, currency, icon, tone, caption }) {
 
 function Empty({ text }) { return <div className="empty">{text}</div> }
 
-function ImportPanel({ fileName, rows, issues, busy, accountName, onFileChange, onRemoveRow, onImport }) {
+function ImportPanel({ fileName, rows, issues, headers, mapping, busy, accountName, onFileChange, onMappingChange, onRemoveRow, onImport }) {
   return <section className={'import-panel ' + (fileName ? 'with-file' : '')}>
     <div className="import-heading"><div><p className="eyebrow">IMPORTAR EXTRATO</p><h3>Importar ficheiro</h3><p>Excel ou CSV para <strong>{accountName}</strong>.</p></div><label className="button secondary import-file-button">{busy ? 'Lendo…' : 'Escolher arquivo'}<input type="file" accept=".xlsx,.xls,.csv" onChange={onFileChange} disabled={busy} /></label></div>
-    {fileName && <><p className="import-help">Confere os dados antes de gravar. São aceites as colunas Data, Descrição e Valor; Tipo, Categoria e Moeda são opcionais.</p><div className="import-result"><div className="import-result-heading"><span><strong>{fileName}</strong> · {rows.length} linhas prontas</span><span>{issues.length ? `${issues.length} aviso(s)` : 'Pronto para importar'}</span></div>{rows.length > 0 && <div className="import-table-wrap"><table className="import-table"><thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Tipo</th><th>Valor</th><th /></tr></thead><tbody>{rows.slice(0, 8).map((row, index) => <tr key={`${row.data}-${row.descricao}-${index}`}><td>{dateFormatter.format(new Date(`${row.data}T12:00:00`))}</td><td>{row.descricao}</td><td>{row.categoria}</td><td>{row.tipo}</td><td>{formatMoney(row.valor, row.moeda)}</td><td><button type="button" onClick={() => onRemoveRow(index)}>Remover</button></td></tr>)}</tbody></table></div>}{rows.length > 8 && <p className="import-more">A mostrar 8 de {rows.length} lançamentos. Todos serão importados.</p>}{issues.length > 0 && <details className="import-issues"><summary>Ver linhas que não serão importadas</summary><ul>{issues.slice(0, 10).map(issue => <li key={issue}>{issue}</li>)}</ul></details>}{rows.length > 0 && <button type="button" className="button primary import-confirm" onClick={onImport} disabled={busy}>{busy ? 'Importando…' : `Importar ${rows.length} lançamentos`}</button>}</div></>}
+    {fileName && <><p className="import-help">Confere os dados antes de gravar. Se alguma coluna foi entendida incorretamente, ajusta-a abaixo.</p><ImportColumnMapping headers={headers} mapping={mapping} onChange={onMappingChange} /><div className="import-result"><div className="import-result-heading"><span><strong>{fileName}</strong> · {rows.length} linhas prontas</span><span>{issues.length ? `${issues.length} aviso(s)` : 'Pronto para importar'}</span></div>{rows.length > 0 && <div className="import-table-wrap"><table className="import-table"><thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Tipo</th><th>Valor</th><th /></tr></thead><tbody>{rows.slice(0, 8).map((row, index) => <tr key={`${row.data}-${row.descricao}-${index}`}><td>{dateFormatter.format(new Date(`${row.data}T12:00:00`))}</td><td>{row.descricao}</td><td>{row.categoria}</td><td>{row.tipo}</td><td>{formatMoney(row.valor, row.moeda)}</td><td><button type="button" onClick={() => onRemoveRow(index)}>Remover</button></td></tr>)}</tbody></table></div>}{rows.length > 8 && <p className="import-more">A mostrar 8 de {rows.length} lançamentos. Todos serão importados.</p>}{issues.length > 0 && <details className="import-issues"><summary>Ver linhas que não serão importadas</summary><ul>{issues.slice(0, 10).map(issue => <li key={issue}>{issue}</li>)}</ul></details>}{rows.length > 0 && <button type="button" className="button primary import-confirm" onClick={onImport} disabled={busy}>{busy ? 'Importando…' : `Importar ${rows.length} lançamentos`}</button>}</div></>}
   </section>
+}
+
+function ImportColumnMapping({ headers, mapping, onChange }) {
+  const fields = [['data', 'Data *'], ['descricao', 'Descrição *'], ['valor', 'Valor *'], ['tipo', 'Tipo'], ['categoria', 'Categoria'], ['moeda', 'Moeda']]
+  const requiredMissing = !mapping.data || !mapping.descricao || !mapping.valor
+  return <details className="import-mapping" open={requiredMissing}><summary>{requiredMissing ? 'Indique as colunas obrigatórias para continuar' : 'Ajustar colunas do ficheiro'}</summary><div className="import-mapping-grid">{fields.map(([field, label]) => <label key={field}>{label}<select value={mapping[field]} onChange={event => onChange(field, event.target.value)}><option value="">{field === 'data' || field === 'descricao' || field === 'valor' ? 'Selecionar coluna' : 'Não usar esta coluna'}</option>{headers.map(header => <option value={header} key={header}>{header}</option>)}</select></label>)}</div></details>
 }
 
 export default App
