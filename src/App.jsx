@@ -99,6 +99,7 @@ function Dashboard({ session }) {
   const [annualItems, setAnnualItems] = useState([])
   const [accounts, setAccounts] = useState([])
   const [activeAccountId, setActiveAccountId] = useState('personal')
+  const [showAccountPicker, setShowAccountPicker] = useState(false)
   const [activity, setActivity] = useState([])
   const [showAccounts, setShowAccounts] = useState(false)
   const [newAccountName, setNewAccountName] = useState('')
@@ -113,6 +114,9 @@ function Dashboard({ session }) {
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
   const [noticeKind, setNoticeKind] = useState('error')
+  const [goals, setGoals] = useState([])
+  const [showGoalForm, setShowGoalForm] = useState(false)
+  const [goalForm, setGoalForm] = useState({ titulo: '', valor_meta: '', valor_atual: '0', moeda: 'EUR', prazo: '' })
   const [exchange, setExchange] = useState({ rate: null, date: '', loading: true, error: '' })
   const [displayCurrency, setDisplayCurrency] = useState('EUR')
 
@@ -125,6 +129,7 @@ function Dashboard({ session }) {
   useEffect(() => { loadProfile(); loadAccounts() }, [])
   useEffect(() => { loadItems() }, [periodStart, periodEnd, activeAccountId])
   useEffect(() => { loadAnnualItems() }, [yearStart, yearEnd, activeAccountId])
+  useEffect(() => { loadGoals() }, [activeAccountId])
   useEffect(() => { if (activeAccountId === 'personal') setActivity([]); else loadActivity() }, [activeAccountId])
   useEffect(() => {
     loadExchangeRate()
@@ -171,6 +176,13 @@ function Dashboard({ session }) {
     if (error) { setNoticeKind('error'); setNotice('Não foi possível carregar o resumo anual: ' + error.message); return false }
     setAnnualItems(data || [])
     return true
+  }
+
+  async function loadGoals() {
+    const query = queryForActiveAccount(supabase.from('metas').select('*').order('created_at', { ascending: false }))
+    const { data, error } = await query
+    if (error) return setGoals([])
+    setGoals(data || [])
   }
 
   async function loadActivity() {
@@ -313,6 +325,48 @@ function Dashboard({ session }) {
     setAccountMessage('Conta conjunta encerrada. Os lançamentos foram preservados nas contas pessoais de quem os criou.')
   }
 
+  async function saveGoal(event) {
+    event.preventDefault()
+    const target = Number(String(goalForm.valor_meta).replace(',', '.'))
+    const current = Number(String(goalForm.valor_atual).replace(',', '.'))
+    if (!goalForm.titulo.trim() || !(target > 0) || current < 0) {
+      setNoticeKind('error')
+      return setNotice('Informe uma meta e valores válidos.')
+    }
+    const { error } = await supabase.from('metas').insert({
+      user_id: session.user.id,
+      conta_id: activeAccountId === 'personal' ? null : activeAccountId,
+      titulo: goalForm.titulo.trim(),
+      valor_meta: target,
+      valor_atual: current,
+      moeda: goalForm.moeda,
+      prazo: goalForm.prazo || null,
+    })
+    if (error) { setNoticeKind('error'); return setNotice('Não foi possível criar a meta: ' + error.message) }
+    setGoalForm({ titulo: '', valor_meta: '', valor_atual: '0', moeda: displayCurrency, prazo: '' })
+    setShowGoalForm(false)
+    setNoticeKind('success')
+    setNotice('Meta criada com sucesso.')
+    await loadGoals()
+  }
+
+  async function updateGoalProgress(goal) {
+    const value = window.prompt(`Qual é o valor atual da meta “${goal.titulo}”?`, String(goal.valor_atual))
+    if (value === null) return
+    const amount = Number(String(value).replace(',', '.'))
+    if (amount < 0 || Number.isNaN(amount)) return
+    const { error } = await supabase.from('metas').update({ valor_atual: amount }).eq('id', goal.id)
+    if (error) { setNoticeKind('error'); return setNotice('Não foi possível atualizar a meta: ' + error.message) }
+    await loadGoals()
+  }
+
+  async function removeGoal(id) {
+    if (!window.confirm('Excluir esta meta?')) return
+    const { error } = await supabase.from('metas').delete().eq('id', id)
+    if (error) { setNoticeKind('error'); return setNotice('Não foi possível excluir a meta: ' + error.message) }
+    await loadGoals()
+  }
+
   function editItem(item) {
     const hasKnownCategory = CATEGORIAS.includes(item.categoria)
     setEditing(item.id)
@@ -326,9 +380,9 @@ function Dashboard({ session }) {
   const hasExchangeWarning = exchange.error || totals.hasUnconvertedEuro || annual.hasUnconvertedEuro
 
   return <main className="app-shell">
-    <header className="topbar"><div className="brand"><div className="brand-mark small">MF</div><div><span>Meu Fluxo</span><small>{activeAccount?.nome || 'Finanças pessoais'}</small></div></div><nav className="desktop-nav"><a className="active" href="#visao-geral">Visão geral</a><a href="#novo-lancamento">Lançamentos</a><a href="#relatorios">Relatórios</a><a href="#metas">Metas</a></nav><div className="user-actions"><button className="accounts-trigger" type="button" onClick={() => setShowAccounts(current => !current)}>Contas conjuntas</button><span>Olá, {profile || '…'}</span><button className="text-button" onClick={logout}>Sair</button></div></header>
+    <header className="topbar"><div className="brand"><div className="brand-mark small">MF</div><div><span>Meu Fluxo</span><small>{activeAccount?.nome || 'Finanças pessoais'}</small></div></div><nav className="desktop-nav"><a className="active" href="#visao-geral">Visão geral</a><a href="#novo-lancamento">Lançamentos</a><a href="#relatorios">Relatórios</a><a href="#metas">Metas</a></nav><div className="user-actions"><button className="account-select-trigger" type="button" onClick={() => setShowAccountPicker(current => !current)}>Selecionar conta</button><button className="accounts-trigger" type="button" onClick={() => setShowAccounts(current => !current)}>Contas conjuntas</button><span>Olá, {profile || '…'}</span><button className="text-button" onClick={logout}>Sair</button></div></header>
 
-    <section className="account-toolbar"><div><p className="eyebrow">CONTA ATIVA</p><select value={activeAccountId} onChange={event => setActiveAccountId(event.target.value)}><option value="personal">Minha conta pessoal</option>{accounts.map(account => <option value={account.id} key={account.id}>{account.nome}</option>)}</select></div><button className="button secondary" type="button" onClick={() => setShowAccounts(current => !current)}>Gerenciar contas</button></section>
+    <section className={'account-toolbar ' + (showAccountPicker ? 'visible' : '')}><div><p className="eyebrow">CONTA ATIVA</p><select value={activeAccountId} onChange={event => { setActiveAccountId(event.target.value); setShowAccountPicker(false) }}><option value="personal">Minha conta pessoal</option>{accounts.map(account => <option value={account.id} key={account.id}>{account.nome}</option>)}</select></div><button className="button secondary" type="button" onClick={() => setShowAccounts(current => !current)}>Gerenciar contas</button></section>
 
     {showAccounts && <section className="shared-account-card"><div className="section-heading"><div><p className="eyebrow">COMPARTILHAMENTO</p><h2>Contas conjuntas</h2><p className="section-subtitle">Cada pessoa entra com seu próprio e-mail. Toda alteração fica registrada com o nome de quem a fez.</p></div><button type="button" className="text-button" onClick={() => setShowAccounts(false)}>Fechar</button></div>
       <div className="shared-account-grid"><form onSubmit={createJointAccount} className="account-form"><h3>Criar uma conta</h3><p>Crie uma conta para dividir despesas e receitas.</p><input value={newAccountName} onChange={event => setNewAccountName(event.target.value)} placeholder="Ex.: Casa da família" required /><button className="button primary" disabled={accountBusy}>{accountBusy ? 'Aguarde…' : 'Criar conta conjunta'}</button></form><form onSubmit={joinJointAccount} className="account-form"><h3>Entrar em uma conta</h3><p>Peça o código de convite a quem criou a conta.</p><input value={joinCode} onChange={event => setJoinCode(event.target.value.toUpperCase())} placeholder="Ex.: AB12-CD34" required /><button className="button secondary" disabled={accountBusy}>{accountBusy ? 'Aguarde…' : 'Entrar com código'}</button></form>
@@ -346,7 +400,9 @@ function Dashboard({ session }) {
     <section className={`content-grid ${showEntryForm ? 'form-open' : 'form-closed'}`}>{showEntryForm && <form className="entry-card" id="novo-lancamento" onSubmit={saveItem}><div className="section-heading"><div><p className="eyebrow">{editing ? 'A EDITAR' : 'NOVO LANÇAMENTO'}</p><h2>{editing ? 'Atualize o lançamento' : 'Registre um movimento'}</h2></div><button type="button" className="text-button" onClick={() => { clearForm(); setShowEntryForm(false) }}>Fechar</button></div><div className="entry-grid"><label>Data<input type="date" value={form.data} onChange={event => changeForm('data', event.target.value)} required /></label><label>Tipo<select value={form.tipo} onChange={event => changeForm('tipo', event.target.value)}><option>Gasto</option><option>Recebimento</option></select></label><label>Moeda<select value={form.moeda} onChange={event => changeForm('moeda', event.target.value)}><option value="BRL">Real brasileiro (R$)</option><option value="EUR">Euro (€)</option></select></label><label>Categoria<select value={form.categoria} onChange={event => changeForm('categoria', event.target.value)}>{CATEGORIAS.map(category => <option key={category}>{category}</option>)}</select></label>{form.categoria === 'Outros' && <label className="span-all">Qual categoria?<input value={form.categoriaOutro} onChange={event => changeForm('categoriaOutro', event.target.value)} placeholder="Ex.: Animais, presente, manutenção…" required /></label>}<label>Valor ({form.moeda === 'EUR' ? '€' : 'R$'})<input inputMode="decimal" value={form.valor} onChange={event => changeForm('valor', event.target.value)} placeholder="0,00" required /></label><label className="span-all">Descrição<input value={form.descricao} onChange={event => changeForm('descricao', event.target.value)} placeholder="Ex.: Compras do supermercado" required /></label></div>{form.moeda === 'EUR' && <p className="conversion-preview">{exchange.rate ? `Cotação de hoje: € 1 = ${formatMoney(exchange.rate)}. Este lançamento será exibido em real com a taxa atual.` : 'Buscando a cotação atual do euro…'}</p>}{notice && <p className={'form-message ' + noticeKind}>{notice}</p>}<button className="button primary" disabled={busy}>{busy ? 'A guardar…' : editing ? 'Guardar alterações' : 'Adicionar lançamento'}</button></form>}
       <section className="category-card"><div className="section-heading"><div><p className="eyebrow">ANÁLISE DO MÊS</p><h2>Gastos por categoria</h2></div><button type="button" className="text-button">Ver todas</button></div>{expenseCategories.length ? <div className="category-visual"><CategoryDonut items={expenseCategories} total={totals.expenses} displayValue={displayValue} currency={displayCurrency} /><div className="category-list">{expenseCategories.slice(0, 6).map((item, index) => <div className="category-row" key={item.name}><span><i className={`category-color color-${index % 6}`} />{item.name}</span><strong>{displayValue(item.value) === null ? '—' : formatMoney(displayValue(item.value), displayCurrency)}</strong></div>)}</div></div> : <Empty text="Ainda não existem gastos neste mês." />}</section></section>
 
-    <section className="annual-card"><div className="section-heading"><div><p className="eyebrow">VISÃO ANUAL</p><h2>Gastos de {year}</h2><p className="section-subtitle">Todos os gastos, agrupados por mês e convertidos para {currencyName} na cotação atual.</p></div><strong className="annual-total">{displayValue(annual.total) === null ? '—' : formatMoney(displayValue(annual.total), displayCurrency)}</strong></div><div className="annual-chart">{annual.byMonth.map(item => <div className="month-column" key={item.month}><span className="bar-value">{item.total ? (displayValue(item.total) === null ? '—' : formatMoney(displayValue(item.total), displayCurrency)) : ''}</span><div className="bar-track"><div className="bar-fill" style={{ height: `${(item.total / annualMax) * 100}%` }} /></div><span>{shortMonthFormatter.format(new Date(year, item.month, 1)).replace('.', '')}</span></div>)}</div></section>
+    <section className="goals-card" id="metas"><div className="section-heading"><div><p className="eyebrow">PLANEJAMENTO</p><h2>Metas financeiras</h2><p className="section-subtitle">Acompanhe objetivos pessoais ou compartilhados.</p></div><button type="button" className="button secondary goal-add" onClick={() => setShowGoalForm(current => !current)}>{showGoalForm ? 'Fechar' : 'Nova meta'}</button></div>{showGoalForm && <form className="goal-form" onSubmit={saveGoal}><input value={goalForm.titulo} onChange={event => setGoalForm(current => ({ ...current, titulo: event.target.value }))} placeholder="Ex.: Reserva de emergência" required /><input inputMode="decimal" value={goalForm.valor_meta} onChange={event => setGoalForm(current => ({ ...current, valor_meta: event.target.value }))} placeholder="Valor da meta" required /><input inputMode="decimal" value={goalForm.valor_atual} onChange={event => setGoalForm(current => ({ ...current, valor_atual: event.target.value }))} placeholder="Valor atual" required /><select value={goalForm.moeda} onChange={event => setGoalForm(current => ({ ...current, moeda: event.target.value }))}><option value="EUR">Euro (€)</option><option value="BRL">Real (R$)</option></select><input type="date" value={goalForm.prazo} onChange={event => setGoalForm(current => ({ ...current, prazo: event.target.value }))} /><button className="button primary">Salvar meta</button></form>}{goals.length ? <div className="goals-grid">{goals.map(goal => { const progress = Math.min(100, (Number(goal.valor_atual) / Number(goal.valor_meta)) * 100 || 0); return <article className="goal-item" key={goal.id}><div className="goal-title"><div><h3>{goal.titulo}</h3><p>{goal.prazo ? `Prazo: ${dateFormatter.format(new Date(`${goal.prazo}T12:00:00`))}` : 'Sem prazo definido'}</p></div><button type="button" className="text-button" onClick={() => removeGoal(goal.id)}>Excluir</button></div><div className="goal-values"><strong>{formatMoney(goal.valor_atual, goal.moeda)}</strong><span>de {formatMoney(goal.valor_meta, goal.moeda)}</span></div><div className="goal-track"><span style={{ width: `${progress}%` }} /></div><div className="goal-footer"><small>{progress.toFixed(0)}% concluído</small><button type="button" className="text-button" onClick={() => updateGoalProgress(goal)}>Atualizar progresso</button></div></article> })}</div> : <Empty text="Você ainda não criou uma meta. Comece com um objetivo simples." />}</section>
+
+    <section className="annual-card" id="relatorios"><div className="section-heading"><div><p className="eyebrow">RELATÓRIOS · VISÃO ANUAL</p><h2>Gastos de {year}</h2><p className="section-subtitle">Todos os gastos, agrupados por mês e convertidos para {currencyName} na cotação atual.</p></div><strong className="annual-total">{displayValue(annual.total) === null ? '—' : formatMoney(displayValue(annual.total), displayCurrency)}</strong></div><div className="annual-chart">{annual.byMonth.map(item => <div className="month-column" key={item.month}><span className="bar-value">{item.total ? (displayValue(item.total) === null ? '—' : formatMoney(displayValue(item.total), displayCurrency)) : ''}</span><div className="bar-track"><div className="bar-fill" style={{ height: `${(item.total / annualMax) * 100}%` }} /></div><span>{shortMonthFormatter.format(new Date(year, item.month, 1)).replace('.', '')}</span></div>)}</div></section>
 
     <section className="transactions-card" id="historico"><div className="section-heading"><div><p className="eyebrow">HISTÓRICO</p><h2>Lançamentos de {periodLabel}</h2></div><span className="count">{items.length} {items.length === 1 ? 'movimento' : 'movimentos'}</span></div>{items.length ? <div className="table-wrap"><table><thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Tipo</th><th>Valor informado</th><th>Em real hoje</th><th><span className="sr-only">Ações</span></th></tr></thead><tbody>{items.map(item => { const converted = toBrl(item, exchange.rate); return <tr key={item.id}><td>{dateFormatter.format(new Date(`${item.data}T12:00:00`))}</td><td><strong>{item.descricao}</strong></td><td>{item.categoria}</td><td><span className={'pill ' + (item.tipo === 'Recebimento' ? 'income' : 'expense')}>{item.tipo}</span></td><td className={item.tipo === 'Recebimento' ? 'positive' : 'negative'}>{item.tipo === 'Recebimento' ? '+' : '−'} {formatMoney(item.valor, item.moeda || 'BRL')}</td><td>{item.moeda === 'EUR' ? (converted === null ? 'Cotação indisponível' : formatMoney(converted)) : '—'}</td><td className="row-actions"><button onClick={() => editItem(item)}>Editar</button><button onClick={() => removeItem(item.id)} className="delete">Excluir</button></td></tr> })}</tbody></table></div> : <Empty text="Sem lançamentos para este mês. Use o formulário acima para adicionar o primeiro." />}</section>
   </main>

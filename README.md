@@ -4,7 +4,7 @@ Aplicação React com autenticação e dados individuais no Supabase. Cada pesso
 
 ## Preparação
 
-1. Crie um projeto em [Supabase](https://supabase.com) e execute [`supabase/schema.sql`](supabase/schema.sql) no **SQL Editor**. Se você já executou o SQL antes, execute [`supabase/migration-moedas-eur.sql`](supabase/migration-moedas-eur.sql), depois [`supabase/migration-contas-conjuntas.sql`](supabase/migration-contas-conjuntas.sql) e, se essa migração já tinha sido executada antes, [`supabase/migration-admin-conta.sql`](supabase/migration-admin-conta.sql).
+1. Crie um projeto em [Supabase](https://supabase.com) e execute [`supabase/schema.sql`](supabase/schema.sql) no **SQL Editor**. Se você já executou o SQL antes, execute [`supabase/migration-moedas-eur.sql`](supabase/migration-moedas-eur.sql), depois [`supabase/migration-contas-conjuntas.sql`](supabase/migration-contas-conjuntas.sql), [`supabase/migration-admin-conta.sql`](supabase/migration-admin-conta.sql) e [`supabase/migration-metas.sql`](supabase/migration-metas.sql).
 2. Em **Authentication > Providers > Email**, ative o login por e-mail. Para desenvolvimento, pode desativar a confirmação de e-mail; em produção, mantenha-a ativa.
 3. Copie `.env.example` para `.env` e informe a URL e a chave `anon` do projeto Supabase.
 4. Execute `npm.cmd install` e depois `npm.cmd run dev`.
