@@ -227,6 +227,7 @@ function Dashboard({ session }) {
   const [importMapping, setImportMapping] = useState(EMPTY_IMPORT_MAPPING)
   const [importBusy, setImportBusy] = useState(false)
   const [importAccountId, setImportAccountId] = useState('personal')
+  const [exportBusy, setExportBusy] = useState(false)
   const [goals, setGoals] = useState([])
   const [showGoalForm, setShowGoalForm] = useState(false)
   const [goalForm, setGoalForm] = useState({ titulo: '', valor_meta: '', valor_atual: '0', moeda: 'EUR', prazo: '' })
@@ -553,6 +554,60 @@ function Dashboard({ session }) {
     setNotice(`${items.length} lançamentos de ${periodLabel} foram apagados.`)
   }
 
+  function exportAmount(item) {
+    if (item.moeda === displayCurrency) return Number(item.valor)
+    const amountInBrl = toBrl(item, exchange.rate)
+    return amountInBrl === null ? null : convertFromBrl(amountInBrl, displayCurrency, exchange.rate)
+  }
+
+  function groupedExpenseRows(source, field, title, sortByDate = false) {
+    const groups = new Map()
+    source.filter(item => item.tipo === 'Gasto').forEach(item => {
+      const amount = exportAmount(item)
+      if (amount === null) return
+      const key = field === 'data' ? item.data : item[field]
+      const current = groups.get(key) || { label: field === 'data' ? dateFormatter.format(new Date(`${item.data}T12:00:00`)) : key, count: 0, total: 0 }
+      current.count += 1
+      current.total += amount
+      groups.set(key, current)
+    })
+    return [...groups.entries()].sort(([firstKey, first], [secondKey, second]) => sortByDate ? secondKey.localeCompare(firstKey) : second.total - first.total).map(([, item]) => ({ [title]: item.label, 'Número de gastos': item.count, [`Total (${displayCurrency === 'EUR' ? '€' : 'R$'})`]: Number(item.total.toFixed(2)) }))
+  }
+
+  async function exportExpenseReports() {
+    const source = [...items, ...annualItems]
+    if (source.some(item => item.moeda !== displayCurrency) && !exchange.rate) {
+      setNoticeKind('error')
+      return setNotice('Aguarde a cotação EUR/BRL para exportar valores convertidos.')
+    }
+    setExportBusy(true)
+    try {
+      const XLSX = await import('xlsx')
+      const accountName = activeAccount?.nome || 'Finanças pessoais'
+      const currencyLabel = displayCurrency === 'EUR' ? 'Euro (€)' : 'Real brasileiro (R$)'
+      const makeSheet = (title, subtitle, rows) => {
+        const sheet = XLSX.utils.aoa_to_sheet([[title], [`Conta: ${accountName}`], [subtitle], [`Valores em ${currencyLabel}`], []])
+        if (rows.length) XLSX.utils.sheet_add_json(sheet, rows, { origin: 'A6' })
+        else XLSX.utils.sheet_add_aoa(sheet, [['Sem gastos para este período.']], { origin: 'A6' })
+        sheet['!cols'] = [{ wch: 30 }, { wch: 18 }, { wch: 18 }]
+        return sheet
+      }
+      const workbook = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(workbook, makeSheet('Gastos por categoria', periodLabel, groupedExpenseRows(items, 'categoria', 'Categoria')), 'Por categoria')
+      XLSX.utils.book_append_sheet(workbook, makeSheet('Gastos por descrição', periodLabel, groupedExpenseRows(items, 'descricao', 'Descrição')), 'Por descrição')
+      XLSX.utils.book_append_sheet(workbook, makeSheet('Gastos por data', periodLabel, groupedExpenseRows(items, 'data', 'Data', true)), 'Por data')
+      XLSX.utils.book_append_sheet(workbook, makeSheet('Gastos anuais por categoria', `Ano de ${year}`, groupedExpenseRows(annualItems, 'categoria', 'Categoria')), 'Anual categoria')
+      XLSX.writeFile(workbook, `relatorios-meu-fluxo-${year}-${String(month + 1).padStart(2, '0')}.xlsx`)
+      setNoticeKind('success')
+      setNotice('Relatórios exportados em Excel. Nenhum lançamento foi alterado.')
+    } catch (error) {
+      setNoticeKind('error')
+      setNotice('Não foi possível exportar os relatórios: ' + (error.message || 'erro desconhecido.'))
+    } finally {
+      setExportBusy(false)
+    }
+  }
+
   async function createJointAccount(event) {
     event.preventDefault()
     if (!newAccountName.trim()) return
@@ -714,7 +769,7 @@ function Dashboard({ session }) {
 
     <section className="goals-card" id="metas"><div className="section-heading"><div><p className="eyebrow">PLANEJAMENTO</p><h2>Metas financeiras</h2><p className="section-subtitle">Acompanhe objetivos pessoais ou compartilhados.</p></div><button type="button" className="button secondary goal-add" onClick={() => setShowGoalForm(current => !current)}>{showGoalForm ? 'Fechar' : 'Nova meta'}</button></div>{showGoalForm && <form className="goal-form" onSubmit={saveGoal}><input value={goalForm.titulo} onChange={event => setGoalForm(current => ({ ...current, titulo: event.target.value }))} placeholder="Ex.: Reserva de emergência" required /><input inputMode="decimal" value={goalForm.valor_meta} onChange={event => setGoalForm(current => ({ ...current, valor_meta: event.target.value }))} placeholder="Valor da meta" required /><input inputMode="decimal" value={goalForm.valor_atual} onChange={event => setGoalForm(current => ({ ...current, valor_atual: event.target.value }))} placeholder="Valor atual" required /><select value={goalForm.moeda} onChange={event => setGoalForm(current => ({ ...current, moeda: event.target.value }))}><option value="EUR">Euro (€)</option><option value="BRL">Real (R$)</option></select><input type="date" value={goalForm.prazo} onChange={event => setGoalForm(current => ({ ...current, prazo: event.target.value }))} /><button className="button primary">Salvar meta</button></form>}{goals.length ? <div className="goals-grid">{goals.map(goal => { const progress = Math.min(100, (Number(goal.valor_atual) / Number(goal.valor_meta)) * 100 || 0); return <article className="goal-item" key={goal.id}><div className="goal-title"><div><h3>{goal.titulo}</h3><p>{goal.prazo ? `Prazo: ${dateFormatter.format(new Date(`${goal.prazo}T12:00:00`))}` : 'Sem prazo definido'}</p></div><button type="button" className="text-button" onClick={() => removeGoal(goal.id)}>Excluir</button></div><div className="goal-values"><strong>{formatMoney(goal.valor_atual, goal.moeda)}</strong><span>de {formatMoney(goal.valor_meta, goal.moeda)}</span></div><div className="goal-track"><span style={{ width: `${progress}%` }} /></div><div className="goal-footer"><small>{progress.toFixed(0)}% concluído</small><button type="button" className="text-button" onClick={() => updateGoalProgress(goal)}>Atualizar progresso</button></div></article> })}</div> : <Empty text="Você ainda não criou uma meta. Comece com um objetivo simples." />}</section>
 
-    <section className="annual-card" id="relatorios"><div className="section-heading"><div><p className="eyebrow">RELATÓRIOS · VISÃO ANUAL</p><h2>Gastos de {year}</h2><p className="section-subtitle">Todos os gastos, agrupados por mês e convertidos para {currencyName} na cotação atual.</p></div><strong className="annual-total">{displayValue(annual.total) === null ? '—' : formatMoney(displayValue(annual.total), displayCurrency)}</strong></div><div className="annual-chart">{annual.byMonth.map(item => <div className="month-column" key={item.month}><span className="bar-value">{item.total ? (displayValue(item.total) === null ? '—' : formatMoney(displayValue(item.total), displayCurrency)) : ''}</span><div className="bar-track"><div className="bar-fill" style={{ height: `${(item.total / annualMax) * 100}%` }} /></div><span>{shortMonthFormatter.format(new Date(year, item.month, 1)).replace('.', '')}</span></div>)}</div></section>
+    <section className="annual-card" id="relatorios"><div className="section-heading"><div><p className="eyebrow">RELATÓRIOS · VISÃO ANUAL</p><h2>Gastos de {year}</h2><p className="section-subtitle">Todos os gastos, agrupados por mês e convertidos para {currencyName} na cotação atual.</p></div><div className="report-actions"><button type="button" className="button secondary export-reports-button" onClick={exportExpenseReports} disabled={exportBusy}>{exportBusy ? 'Preparando…' : 'Exportar Excel'}</button><strong className="annual-total">{displayValue(annual.total) === null ? '—' : formatMoney(displayValue(annual.total), displayCurrency)}</strong></div></div><p className="export-report-note">Inclui relatórios por categoria, descrição, data e categoria anual. A exportação não altera os seus dados.</p><div className="annual-chart">{annual.byMonth.map(item => <div className="month-column" key={item.month}><span className="bar-value">{item.total ? (displayValue(item.total) === null ? '—' : formatMoney(displayValue(item.total), displayCurrency)) : ''}</span><div className="bar-track"><div className="bar-fill" style={{ height: `${(item.total / annualMax) * 100}%` }} /></div><span>{shortMonthFormatter.format(new Date(year, item.month, 1)).replace('.', '')}</span></div>)}</div></section>
 
   </main>
 }
