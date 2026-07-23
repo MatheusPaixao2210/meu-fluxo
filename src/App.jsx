@@ -62,6 +62,20 @@ function guessImportMapping(headers) {
   }) || '']))
 }
 
+function extractImportRecords(XLSX, worksheet) {
+  const grid = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '', raw: false })
+  const headerRow = grid.findIndex(row => {
+    const cells = row.map(normalizeImportText)
+    const hasDate = cells.some(cell => cell.startsWith('data') || cell === 'date')
+    const hasDescription = cells.some(cell => cell.includes('descricao') || cell.includes('description') || cell.includes('historico'))
+    const hasValue = cells.some(cell => cell.includes('valor') || cell.includes('value') || cell.includes('amount') || cell.includes('debito') || cell.includes('credito'))
+    return hasDate && hasDescription && hasValue
+  })
+  const range = headerRow === -1 ? 0 : headerRow
+  const records = XLSX.utils.sheet_to_json(worksheet, { range, defval: '', raw: false })
+  return { records, headers: Object.keys(records[0] || {}), headerRow }
+}
+
 function importDate(value) {
   if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0, 10)
   if (typeof value === 'number' && Number.isFinite(value)) {
@@ -118,7 +132,7 @@ function parseImportedRows(records, mapping = EMPTY_IMPORT_MAPPING) {
     const importedCategory = String(mappedValue('categoria', IMPORT_COLUMNS.categoria) ?? '').trim()
     const categoria = CATEGORIAS.find(category => normalizeImportText(category) === normalizeImportText(importedCategory)) || importedCategory || 'Outros'
     const descricao = String(mappedValue('descricao', IMPORT_COLUMNS.descricao) ?? (importedCategory || 'Lançamento importado')).trim()
-    const currency = normalizeImportText(mappedValue('moeda', IMPORT_COLUMNS.moeda))
+    const currency = normalizeImportText(mappedValue('moeda', IMPORT_COLUMNS.moeda)) || normalizeImportText(mapping.valor)
     rows.push({ data: date, tipo, categoria, descricao, valor: Math.abs(amount), moeda: /eur|euro|€/.test(currency) ? 'EUR' : 'BRL' })
   })
   if (records.length > MAX_IMPORT_ROWS) issues.push(`Foram consideradas apenas as primeiras ${MAX_IMPORT_ROWS} linhas do arquivo.`)
@@ -420,9 +434,9 @@ function Dashboard({ session }) {
       const XLSX = await import('xlsx')
       const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: true })
       const firstSheet = workbook.Sheets[workbook.SheetNames[0]]
-      const records = XLSX.utils.sheet_to_json(firstSheet, { defval: '', raw: false })
+      const extracted = extractImportRecords(XLSX, firstSheet)
+      const { records, headers } = extracted
       if (!records.length) throw new Error('Não encontrei linhas para importar na primeira folha do arquivo.')
-      const headers = Object.keys(records[0])
       const mapping = guessImportMapping(headers)
       const parsed = parseImportedRows(records, mapping)
       setImportRows(parsed.rows)
