@@ -218,6 +218,7 @@ function Dashboard({ session }) {
   const [showEntryForm, setShowEntryForm] = useState(false)
   const [categoryFilter, setCategoryFilter] = useState('')
   const [typeFilter, setTypeFilter] = useState('')
+  const [descriptionFilter, setDescriptionFilter] = useState('')
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
   const [noticeKind, setNoticeKind] = useState('error')
@@ -375,7 +376,13 @@ function Dashboard({ session }) {
   const categoryOptions = useMemo(() => [...CATEGORIAS, ...savedCategories].filter((category, index, list) => list.findIndex(item => normalizeImportText(item) === normalizeImportText(category)) === index), [savedCategories])
   const availableTransactionCategories = useMemo(() => [...new Set(items.map(item => item.categoria))].sort((first, second) => first.localeCompare(second, 'pt-BR')), [items])
   const availableTransactionTypes = useMemo(() => [...new Set(items.map(item => item.tipo))], [items])
-  const visibleItems = useMemo(() => items.filter(item => (!categoryFilter || item.categoria === categoryFilter) && (!typeFilter || item.tipo === typeFilter)), [items, categoryFilter, typeFilter])
+  const availableTransactionDescriptions = useMemo(() => [...new Set(items.map(item => item.descricao))].sort((first, second) => first.localeCompare(second, 'pt-BR')), [items])
+  const visibleItems = useMemo(() => items.filter(item => (!categoryFilter || item.categoria === categoryFilter) && (!typeFilter || item.tipo === typeFilter) && (!descriptionFilter || item.descricao === descriptionFilter)), [items, categoryFilter, typeFilter, descriptionFilter])
+  const filteredTotal = useMemo(() => visibleItems.reduce((total, item) => {
+    const valueInBrl = toBrl(item, exchange.rate)
+    const value = valueInBrl === null ? 0 : convertFromBrl(valueInBrl, displayCurrency, exchange.rate)
+    return total + (item.tipo === 'Recebimento' ? value : -value)
+  }, 0), [visibleItems, exchange.rate, displayCurrency])
 
   function changeForm(field, value) { setForm(current => ({ ...current, [field]: value })) }
   function clearForm() { setForm(getInitialForm()); setEditing(null) }
@@ -761,7 +768,7 @@ function Dashboard({ session }) {
 
     <section className="transactions-card" id="historico">
       <div className="section-heading"><div><p className="eyebrow">HISTÓRICO</p><h2>Lançamentos de {periodLabel}</h2></div><div className="history-actions"><span className="count">{visibleItems.length}{visibleItems.length !== items.length ? ` de ${items.length}` : ''} {visibleItems.length === 1 ? 'movimento' : 'movimentos'}</span>{items.length > 0 && <button type="button" className="clear-month-button" onClick={removeAllCurrentMonth} disabled={busy}>Apagar mês</button>}</div></div>
-      {items.length > 0 && <div className="transaction-filters"><label>Categoria<select value={categoryFilter} onChange={event => setCategoryFilter(event.target.value)}><option value="">Todas as categorias</option>{availableTransactionCategories.map(category => <option key={category} value={category}>{category}</option>)}</select></label><label>Tipo<select value={typeFilter} onChange={event => setTypeFilter(event.target.value)}><option value="">Todos os tipos</option>{availableTransactionTypes.map(type => <option key={type} value={type}>{type}</option>)}</select></label>{(categoryFilter || typeFilter) && <button type="button" className="text-button clear-filters-button" onClick={() => { setCategoryFilter(''); setTypeFilter('') }}>Limpar filtros</button>}</div>}
+      {items.length > 0 && <div className="transaction-filters"><label>Categoria<select value={categoryFilter} onChange={event => setCategoryFilter(event.target.value)}><option value="">Todas as categorias</option>{availableTransactionCategories.map(category => <option key={category} value={category}>{category}</option>)}</select></label><label>Tipo<select value={typeFilter} onChange={event => setTypeFilter(event.target.value)}><option value="">Todos os tipos</option>{availableTransactionTypes.map(type => <option key={type} value={type}>{type}</option>)}</select></label><label className="description-filter">Descrição<select value={descriptionFilter} onChange={event => setDescriptionFilter(event.target.value)}><option value="">Todas as descrições</option>{availableTransactionDescriptions.map(description => <option key={description} value={description}>{description}</option>)}</select></label><output className={'filtered-total ' + (filteredTotal < 0 ? 'negative' : 'positive')}>Total: {filteredTotal < 0 ? '− ' : filteredTotal > 0 ? '+ ' : ''}{formatMoney(Math.abs(filteredTotal), displayCurrency)}</output>{(categoryFilter || typeFilter || descriptionFilter) && <button type="button" className="text-button clear-filters-button" onClick={() => { setCategoryFilter(''); setTypeFilter(''); setDescriptionFilter('') }}>Limpar filtros</button>}</div>}
       {items.length ? visibleItems.length ? <div className="table-wrap"><table><thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Tipo</th><th>Valor informado</th><th>Em real hoje</th><th><span className="sr-only">Ações</span></th></tr></thead><tbody>{visibleItems.map(item => {
         const converted = toBrl(item, exchange.rate)
         const author = activeAccount ? transactionAuthorLabel(item) : ''
