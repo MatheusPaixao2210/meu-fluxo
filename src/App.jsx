@@ -539,6 +539,20 @@ function Dashboard({ session }) {
     await refreshFinancialData()
   }
 
+  async function removeAllCurrentMonth() {
+    if (!items.length) return
+    const accountName = activeAccount?.nome || 'a sua conta pessoal'
+    const confirmation = window.prompt(`Vai apagar permanentemente os ${items.length} lançamentos de ${periodLabel} em ${accountName}. Escreva APAGAR para confirmar.`)
+    if (confirmation !== 'APAGAR') return
+    setBusy(true)
+    const { error } = await supabase.from('lancamentos').delete().in('id', items.map(item => item.id))
+    setBusy(false)
+    if (error) { setNoticeKind('error'); return setNotice('Não foi possível apagar os lançamentos: ' + error.message) }
+    await refreshFinancialData()
+    setNoticeKind('success')
+    setNotice(`${items.length} lançamentos de ${periodLabel} foram apagados.`)
+  }
+
   async function createJointAccount(event) {
     event.preventDefault()
     if (!newAccountName.trim()) return
@@ -686,7 +700,7 @@ function Dashboard({ session }) {
     </section>
 
     <section className="transactions-card" id="historico">
-      <div className="section-heading"><div><p className="eyebrow">HISTÓRICO</p><h2>Lançamentos de {periodLabel}</h2></div><span className="count">{items.length} {items.length === 1 ? 'movimento' : 'movimentos'}</span></div>
+      <div className="section-heading"><div><p className="eyebrow">HISTÓRICO</p><h2>Lançamentos de {periodLabel}</h2></div><div className="history-actions"><span className="count">{items.length} {items.length === 1 ? 'movimento' : 'movimentos'}</span>{items.length > 0 && <button type="button" className="clear-month-button" onClick={removeAllCurrentMonth} disabled={busy}>Apagar mês</button>}</div></div>
       {items.length ? <div className="table-wrap"><table><thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Tipo</th><th>Valor informado</th><th>Em real hoje</th><th><span className="sr-only">Ações</span></th></tr></thead><tbody>{items.map(item => {
         const converted = toBrl(item, exchange.rate)
         const author = activeAccount ? transactionAuthorLabel(item) : ''
