@@ -284,7 +284,20 @@ function Dashboard({ session }) {
     const query = queryForActiveAccount(supabase.from('lancamentos').select('*').gte('data', periodStart).lt('data', periodEnd).order('data', { ascending: false }).order('created_at', { ascending: false }))
     const { data, error } = await query
     if (error) { setNoticeKind('error'); setNotice('Não foi possível carregar os lançamentos: ' + error.message); return false }
-    setItems(data || [])
+    let loadedItems = data || []
+    if (activeAccountId !== 'personal' && loadedItems.length) {
+      const ids = loadedItems.map(item => item.id)
+      const { data: logs } = await supabase.from('lancamento_historico').select('lancamento_id,acao,autor_nome,ocorrido_em').eq('conta_id', activeAccountId).in('lancamento_id', ids).order('ocorrido_em', { ascending: false })
+      const authors = new Map()
+      ;(logs || []).forEach(log => {
+        const current = authors.get(log.lancamento_id) || { created: null, latest: null }
+        if (!current.latest) current.latest = log
+        if (log.acao === 'criou') current.created = log
+        authors.set(log.lancamento_id, current)
+      })
+      loadedItems = loadedItems.map(item => ({ ...item, autoria: authors.get(item.id) || null }))
+    }
+    setItems(loadedItems)
     return true
   }
 
@@ -672,7 +685,16 @@ function Dashboard({ session }) {
       </form>}
     </section>
 
-    <section className="transactions-card" id="historico"><div className="section-heading"><div><p className="eyebrow">HISTÓRICO</p><h2>Lançamentos de {periodLabel}</h2></div><span className="count">{items.length} {items.length === 1 ? 'movimento' : 'movimentos'}</span></div>{items.length ? <div className="table-wrap"><table><thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Tipo</th><th>Valor informado</th><th>Em real hoje</th><th><span className="sr-only">Ações</span></th></tr></thead><tbody>{items.map(item => { const converted = toBrl(item, exchange.rate); return <tr key={item.id}><td>{dateFormatter.format(new Date(`${item.data}T12:00:00`))}</td><td><strong>{item.descricao}</strong></td><td>{item.categoria}</td><td><span className={'pill ' + (item.tipo === 'Recebimento' ? 'income' : 'expense')}>{item.tipo}</span></td><td className={item.tipo === 'Recebimento' ? 'positive' : 'negative'}>{item.tipo === 'Recebimento' ? '+' : '−'} {formatMoney(item.valor, item.moeda || 'BRL')}</td><td>{item.moeda === 'EUR' ? (converted === null ? 'Cotação indisponível' : formatMoney(converted)) : '—'}</td><td className="row-actions"><button onClick={() => editItem(item)}>Editar</button><button onClick={() => removeItem(item.id)} className="delete">Excluir</button></td></tr> })}</tbody></table></div> : <Empty text="Sem lançamentos para este mês. Use o formulário acima para adicionar o primeiro." />}</section>
+    <section className="transactions-card" id="historico">
+      <div className="section-heading"><div><p className="eyebrow">HISTÓRICO</p><h2>Lançamentos de {periodLabel}</h2></div><span className="count">{items.length} {items.length === 1 ? 'movimento' : 'movimentos'}</span></div>
+      {items.length ? <div className="table-wrap"><table><thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Tipo</th><th>Valor informado</th><th>Em real hoje</th><th><span className="sr-only">Ações</span></th></tr></thead><tbody>{items.map(item => {
+        const converted = toBrl(item, exchange.rate)
+        const author = activeAccount ? transactionAuthorLabel(item) : ''
+        return <tr key={item.id}><td>{dateFormatter.format(new Date(`${item.data}T12:00:00`))}</td><td><strong>{item.descricao}</strong>{author && <small className="transaction-author">{author}</small>}</td><td>{item.categoria}</td><td><span className={'pill ' + (item.tipo === 'Recebimento' ? 'income' : 'expense')}>{item.tipo}</span></td><td className={item.tipo === 'Recebimento' ? 'positive' : 'negative'}>{item.tipo === 'Recebimento' ? '+' : '−'} {formatMoney(item.valor, item.moeda || 'BRL')}</td><td>{item.moeda === 'EUR' ? (converted === null ? 'Cotação indisponível' : formatMoney(converted)) : '—'}</td><td className="row-actions"><button onClick={() => editItem(item)}>Editar</button><button onClick={() => removeItem(item.id)} className="delete">Excluir</button></td></tr>
+      })}</tbody></table></div> : <Empty text="Sem lançamentos para este mês. Use o formulário acima para adicionar o primeiro." />}
+    </section>
+
+    {activeAccount && <details className="joint-activity-card"><summary><span><small>CONTA CONJUNTA</small>Atividade da conta</span><strong>{activity.length} alterações</strong></summary>{activity.length ? <div className="activity-list">{activity.slice(0, 8).map(log => <div className="activity-item" key={log.id}><span className={'activity-dot ' + log.acao} /><p><strong>{log.autor_nome || 'Participante'}</strong> {actionLabel(log.acao)} um lançamento</p><time>{new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(log.ocorrido_em))}</time></div>)}</div> : <p className="muted">Ainda não há alterações nesta conta.</p>}</details>}
 
     <section className="category-card"><div className="section-heading"><div><p className="eyebrow">ANÁLISE DO MÊS</p><h2>Gastos por categoria</h2></div><button type="button" className="text-button">Ver todas</button></div>{expenseCategories.length ? <div className="category-visual"><CategoryDonut items={expenseCategories} total={totals.expenses} displayValue={displayValue} currency={displayCurrency} /><div className="category-list">{expenseCategories.slice(0, 6).map((item, index) => <div className="category-row" key={item.name}><span><i className={`category-color color-${index % 6}`} />{item.name}</span><strong>{displayValue(item.value) === null ? '—' : formatMoney(displayValue(item.value), displayCurrency)}</strong></div>)}</div></div> : <Empty text="Ainda não existem gastos neste mês." />}</section>
 
@@ -681,6 +703,13 @@ function Dashboard({ session }) {
     <section className="annual-card" id="relatorios"><div className="section-heading"><div><p className="eyebrow">RELATÓRIOS · VISÃO ANUAL</p><h2>Gastos de {year}</h2><p className="section-subtitle">Todos os gastos, agrupados por mês e convertidos para {currencyName} na cotação atual.</p></div><strong className="annual-total">{displayValue(annual.total) === null ? '—' : formatMoney(displayValue(annual.total), displayCurrency)}</strong></div><div className="annual-chart">{annual.byMonth.map(item => <div className="month-column" key={item.month}><span className="bar-value">{item.total ? (displayValue(item.total) === null ? '—' : formatMoney(displayValue(item.total), displayCurrency)) : ''}</span><div className="bar-track"><div className="bar-fill" style={{ height: `${(item.total / annualMax) * 100}%` }} /></div><span>{shortMonthFormatter.format(new Date(year, item.month, 1)).replace('.', '')}</span></div>)}</div></section>
 
   </main>
+}
+
+function transactionAuthorLabel(item) {
+  const createdBy = item.autoria?.created?.autor_nome || item.autoria?.latest?.autor_nome
+  if (!createdBy) return ''
+  const editedBy = item.autoria?.latest?.acao === 'editou' ? item.autoria.latest.autor_nome : ''
+  return editedBy && editedBy !== createdBy ? `Adicionado por ${createdBy} · Editado por ${editedBy}` : `Adicionado por ${createdBy}`
 }
 
 function actionLabel(action) {
