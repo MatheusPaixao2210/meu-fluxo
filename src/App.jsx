@@ -216,6 +216,8 @@ function Dashboard({ session }) {
   const [form, setForm] = useState(getInitialForm)
   const [editing, setEditing] = useState(null)
   const [showEntryForm, setShowEntryForm] = useState(false)
+  const [categoryFilter, setCategoryFilter] = useState('')
+  const [typeFilter, setTypeFilter] = useState('')
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState('')
   const [noticeKind, setNoticeKind] = useState('error')
@@ -371,6 +373,9 @@ function Dashboard({ session }) {
     .map(([name, value]) => ({ name, value: Math.abs(value) }))
     .sort((a, b) => b.value - a.value), [totals.byCategory])
   const categoryOptions = useMemo(() => [...CATEGORIAS, ...savedCategories].filter((category, index, list) => list.findIndex(item => normalizeImportText(item) === normalizeImportText(category)) === index), [savedCategories])
+  const availableTransactionCategories = useMemo(() => [...new Set(items.map(item => item.categoria))].sort((first, second) => first.localeCompare(second, 'pt-BR')), [items])
+  const availableTransactionTypes = useMemo(() => [...new Set(items.map(item => item.tipo))], [items])
+  const visibleItems = useMemo(() => items.filter(item => (!categoryFilter || item.categoria === categoryFilter) && (!typeFilter || item.tipo === typeFilter)), [items, categoryFilter, typeFilter])
 
   function changeForm(field, value) { setForm(current => ({ ...current, [field]: value })) }
   function clearForm() { setForm(getInitialForm()); setEditing(null) }
@@ -755,12 +760,13 @@ function Dashboard({ session }) {
     </section>
 
     <section className="transactions-card" id="historico">
-      <div className="section-heading"><div><p className="eyebrow">HISTÓRICO</p><h2>Lançamentos de {periodLabel}</h2></div><div className="history-actions"><span className="count">{items.length} {items.length === 1 ? 'movimento' : 'movimentos'}</span>{items.length > 0 && <button type="button" className="clear-month-button" onClick={removeAllCurrentMonth} disabled={busy}>Apagar mês</button>}</div></div>
-      {items.length ? <div className="table-wrap"><table><thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Tipo</th><th>Valor informado</th><th>Em real hoje</th><th><span className="sr-only">Ações</span></th></tr></thead><tbody>{items.map(item => {
+      <div className="section-heading"><div><p className="eyebrow">HISTÓRICO</p><h2>Lançamentos de {periodLabel}</h2></div><div className="history-actions"><span className="count">{visibleItems.length}{visibleItems.length !== items.length ? ` de ${items.length}` : ''} {visibleItems.length === 1 ? 'movimento' : 'movimentos'}</span>{items.length > 0 && <button type="button" className="clear-month-button" onClick={removeAllCurrentMonth} disabled={busy}>Apagar mês</button>}</div></div>
+      {items.length > 0 && <div className="transaction-filters"><label>Categoria<select value={categoryFilter} onChange={event => setCategoryFilter(event.target.value)}><option value="">Todas as categorias</option>{availableTransactionCategories.map(category => <option key={category} value={category}>{category}</option>)}</select></label><label>Tipo<select value={typeFilter} onChange={event => setTypeFilter(event.target.value)}><option value="">Todos os tipos</option>{availableTransactionTypes.map(type => <option key={type} value={type}>{type}</option>)}</select></label>{(categoryFilter || typeFilter) && <button type="button" className="text-button clear-filters-button" onClick={() => { setCategoryFilter(''); setTypeFilter('') }}>Limpar filtros</button>}</div>}
+      {items.length ? visibleItems.length ? <div className="table-wrap"><table><thead><tr><th>Data</th><th>Descrição</th><th>Categoria</th><th>Tipo</th><th>Valor informado</th><th>Em real hoje</th><th><span className="sr-only">Ações</span></th></tr></thead><tbody>{visibleItems.map(item => {
         const converted = toBrl(item, exchange.rate)
         const author = activeAccount ? transactionAuthorLabel(item) : ''
         return <tr key={item.id}><td>{dateFormatter.format(new Date(`${item.data}T12:00:00`))}</td><td><strong>{item.descricao}</strong>{author && <small className="transaction-author">{author}</small>}</td><td>{item.categoria}</td><td><span className={'pill ' + (item.tipo === 'Recebimento' ? 'income' : 'expense')}>{item.tipo}</span></td><td className={item.tipo === 'Recebimento' ? 'positive' : 'negative'}>{item.tipo === 'Recebimento' ? '+' : '−'} {formatMoney(item.valor, item.moeda || 'BRL')}</td><td>{item.moeda === 'EUR' ? (converted === null ? 'Cotação indisponível' : formatMoney(converted)) : '—'}</td><td className="row-actions"><button onClick={() => editItem(item)}>Editar</button><button onClick={() => removeItem(item.id)} className="delete">Excluir</button></td></tr>
-      })}</tbody></table></div> : <Empty text="Sem lançamentos para este mês. Use o formulário acima para adicionar o primeiro." />}
+      })}</tbody></table></div> : <Empty text="Nenhum lançamento corresponde aos filtros escolhidos." /> : <Empty text="Sem lançamentos para este mês. Use o formulário acima para adicionar o primeiro." />}
     </section>
 
     {activeAccount && <details className="joint-activity-card"><summary><span><small>CONTA CONJUNTA</small>Atividade da conta</span><strong>{activity.length} alterações</strong></summary>{activity.length ? <div className="activity-list">{activity.slice(0, 8).map(log => <div className="activity-item" key={log.id}><span className={'activity-dot ' + log.acao} /><p><strong>{log.autor_nome || 'Participante'}</strong> {actionLabel(log.acao)} um lançamento</p><time>{new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(log.ocorrido_em))}</time></div>)}</div> : <p className="muted">Ainda não há alterações nesta conta.</p>}</details>}
