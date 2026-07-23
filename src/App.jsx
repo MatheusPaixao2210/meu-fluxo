@@ -132,7 +132,8 @@ function parseImportedRows(records, mapping = EMPTY_IMPORT_MAPPING) {
     const importedCategory = String(mappedValue('categoria', IMPORT_COLUMNS.categoria) ?? '').trim()
     const categoria = CATEGORIAS.find(category => normalizeImportText(category) === normalizeImportText(importedCategory)) || importedCategory || 'Outros'
     const descricao = String(mappedValue('descricao', IMPORT_COLUMNS.descricao) ?? (importedCategory || 'Lançamento importado')).trim()
-    const currency = normalizeImportText(mappedValue('moeda', IMPORT_COLUMNS.moeda)) || normalizeImportText(mapping.valor)
+    const fixedCurrency = mapping.moeda === '__EUR' ? 'eur' : mapping.moeda === '__BRL' ? 'brl' : ''
+    const currency = fixedCurrency || normalizeImportText(mappedValue('moeda', IMPORT_COLUMNS.moeda)) || normalizeImportText(mapping.valor)
     rows.push({ data: date, tipo, categoria, descricao, valor: Math.abs(amount), moeda: /eur|euro|€/.test(currency) ? 'EUR' : 'BRL' })
   })
   if (records.length > MAX_IMPORT_ROWS) issues.push(`Foram consideradas apenas as primeiras ${MAX_IMPORT_ROWS} linhas do arquivo.`)
@@ -713,7 +714,7 @@ function ImportPanel({ fileName, rows, issues, headers, mapping, busy, accountNa
 function ImportColumnMapping({ headers, mapping, onChange }) {
   const fields = [['data', 'Data *'], ['descricao', 'Descrição *'], ['valor', 'Valor *'], ['tipo', 'Tipo'], ['categoria', 'Categoria'], ['moeda', 'Moeda']]
   const requiredMissing = !mapping.data || !mapping.descricao || !mapping.valor
-  return <details className="import-mapping" open={requiredMissing}><summary>{requiredMissing ? 'Indique as colunas obrigatórias para continuar' : 'Ajustar colunas do ficheiro'}</summary><div className="import-mapping-grid">{fields.map(([field, label]) => <label key={field}>{label}<select value={mapping[field]} onChange={event => onChange(field, event.target.value)}><option value="">{field === 'data' || field === 'descricao' || field === 'valor' ? 'Selecionar coluna' : 'Não usar esta coluna'}</option>{headers.map(header => <option value={header} key={header}>{header}</option>)}</select></label>)}</div></details>
+  return <details className="import-mapping" open={requiredMissing}><summary>{requiredMissing ? 'Indique as colunas obrigatórias para continuar' : 'Ajustar colunas do ficheiro'}</summary><div className="import-mapping-grid">{fields.map(([field, label]) => <label key={field}>{label}<select value={mapping[field]} onChange={event => onChange(field, event.target.value)}><option value="">{field === 'data' || field === 'descricao' || field === 'valor' ? 'Selecionar coluna' : 'Não usar esta coluna'}</option>{field === 'moeda' && <><option value="__EUR">Euro (€)</option><option value="__BRL">Real brasileiro (R$)</option></>}{headers.map(header => <option value={header} key={header}>{header}</option>)}</select></label>)}</div></details>
 }
 
 export default App
