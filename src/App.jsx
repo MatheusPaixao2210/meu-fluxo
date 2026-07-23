@@ -234,7 +234,9 @@ function Dashboard({ session }) {
   const [displayCurrency, setDisplayCurrency] = useState('EUR')
 
   const periodStart = `${year}-${String(month + 1).padStart(2, '0')}-01`
-  const periodEnd = new Date(year, month + 1, 1).toISOString().slice(0, 10)
+  const nextPeriodYear = month === 11 ? year + 1 : year
+  const nextPeriodMonth = month === 11 ? 1 : month + 2
+  const periodEnd = `${nextPeriodYear}-${String(nextPeriodMonth).padStart(2, '0')}-01`
   const yearStart = `${year}-01-01`
   const yearEnd = `${year + 1}-01-01`
   const activeAccount = accounts.find(account => account.id === activeAccountId)
@@ -478,16 +480,21 @@ function Dashboard({ session }) {
     const { data: existingItems } = await query
     const existingSignatures = new Set((existingItems || []).map(entrySignature))
     const importedSignatures = new Set()
-    const duplicateCount = importRows.reduce((count, row) => {
+    const rowsToImport = importRows.filter(row => {
       const signature = entrySignature(row)
       const repeated = existingSignatures.has(signature) || importedSignatures.has(signature)
       importedSignatures.add(signature)
-      return count + (repeated ? 1 : 0)
-    }, 0)
-    if (duplicateCount && !window.confirm(`${duplicateCount} lançamento(s) do arquivo já existe(m) nesta conta ou está(ão) repetido(s) no próprio arquivo. Deseja continuar mesmo assim?`)) return
+      return !repeated
+    })
+    const duplicateCount = importRows.length - rowsToImport.length
+    if (duplicateCount && !window.confirm(`${duplicateCount} lançamento(s) repetido(s) serão ignorados. Deseja importar os outros ${rowsToImport.length} lançamento(s)?`)) return
+    if (!rowsToImport.length) {
+      setNoticeKind('error')
+      return setNotice('Todos os lançamentos deste arquivo já existem nesta conta.')
+    }
     setImportBusy(true)
     setNotice('')
-    const payload = importRows.map(row => ({ ...row, user_id: session.user.id, conta_id: importAccountId === 'personal' ? null : importAccountId }))
+    const payload = rowsToImport.map(row => ({ ...row, user_id: session.user.id, conta_id: importAccountId === 'personal' ? null : importAccountId }))
     try {
       for (let start = 0; start < payload.length; start += 100) {
         const { error } = await supabase.from('lancamentos').insert(payload.slice(start, start + 100))
@@ -500,8 +507,8 @@ function Dashboard({ session }) {
       setImportHeaders([])
       setImportMapping(EMPTY_IMPORT_MAPPING)
       setNoticeKind('success')
-      setNotice(`${payload.length} lançamentos foram importados com sucesso.`)
-      await Promise.all([refreshFinancialData(), ...[...new Set(importRows.map(row => row.categoria))].map(category => saveCustomCategory(category, importAccountId))])
+      setNotice(`${payload.length} lançamentos foram importados com sucesso.${duplicateCount ? ` ${duplicateCount} repetido(s) foram ignorados.` : ''}`)
+      await Promise.all([refreshFinancialData(), ...[...new Set(rowsToImport.map(row => row.categoria))].map(category => saveCustomCategory(category, importAccountId))])
       await loadCategories()
       document.getElementById('historico')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     } catch (error) {
