@@ -128,7 +128,7 @@ function parseImportedRows(records, mapping = EMPTY_IMPORT_MAPPING) {
       ? 'Gasto'
       : /recebimento|receita|entrada|credito|income/.test(rawType) || (directValue === undefined && creditValue !== undefined)
         ? 'Recebimento'
-        : 'Gasto'
+        : 'Recebimento'
     const importedCategory = String(mappedValue('categoria', IMPORT_COLUMNS.categoria) ?? '').trim()
     const categoria = CATEGORIAS.find(category => normalizeImportText(category) === normalizeImportText(importedCategory)) || importedCategory || 'Outros'
     const descricao = String(mappedValue('descricao', IMPORT_COLUMNS.descricao) ?? (importedCategory || 'Lançamento importado')).trim()
